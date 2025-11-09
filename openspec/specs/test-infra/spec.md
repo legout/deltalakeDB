@@ -2,31 +2,21 @@
 
 ## Purpose
 Provide a comprehensive local testing environment with multiple S3-compatible object stores to validate Delta Lake mirroring and S3 compatibility across different backends.
-
 ## Requirements
 ### Requirement: Docker Compose Test Environment
-The repository SHALL provide a Docker Compose configuration that starts Postgres and multiple S3-compatible object stores for local integration testing.
+The repository SHALL provide a Docker Compose configuration that starts Postgres, MinIO, SeaweedFS S3, a Rust‑based S3 backend (RustFS from `github.com/rustfs/rustfs`), and Garage for local integration testing.
 
 #### Scenario: Services start and become healthy
 - **WHEN** a developer runs `docker compose up -d`
-- **THEN** Postgres, MinIO, SeaweedFS, RustFS, and Garage services start and become healthy within a reasonable time
+- **THEN** Postgres, MinIO, SeaweedFS S3, RustFS, and Garage services start and become healthy within a reasonable time
 
 #### Scenario: Default endpoints and credentials
 - **WHEN** the environment is running
 - **THEN** Postgres is reachable at `localhost:5432` with user `postgres` and password `postgres`
 - **THEN** MinIO is reachable at `localhost:9000` with access key `minioadmin` and secret key `minioadmin`
-- **THEN** SeaweedFS S3 is reachable at `localhost:8333` with access key `seaweedfsadmin` and secret key `seaweedfsadmin`
-- **THEN** RustFS is reachable at `localhost:9100` with access key `rustfsadmin` and secret key `rustfsadmin`
-- **THEN** Garage is reachable at `localhost:3900` with configurable access keys via Garage CLI
-
-#### Scenario: Unique port allocation
-- **WHEN** all services are running
-- **THEN** each service uses unique ports without conflicts:
-  - Postgres: 5432
-  - MinIO: 9000, 9001
-  - SeaweedFS: 8333, 9333
-  - RustFS: 9100, 9101
-  - Garage: 3900, 3901, 3902, 3903
+- **THEN** SeaweedFS S3 is reachable at `localhost:8333` with access key `seaweedadmin` and secret key `seaweedsecret`
+- **THEN** RustFS S3 is reachable at `localhost:9100` and its web console at `localhost:9101` with access key `rustfsadmin` and secret key `rustfsadmin`
+- **THEN** Garage S3 is reachable at `localhost:3900` and its admin at `localhost:3901` with access key `garageadmin` and secret key `garagesecret`
 
 ### Requirement: Helper Script
 The repository SHALL include a helper script to start/stop the test environment with clear output.
