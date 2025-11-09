@@ -8,12 +8,13 @@ authors.workspace = true
 publish = false
 
 [dependencies]
-# Placeholder for future dependencies
-# serde = { workspace = true }
-# serde_json = { workspace = true }
-# thiserror = { workspace = true }
-# tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
-# Placeholder for future dev dependencies
-# tokio-test = "0.4"
+tokio = { workspace = true, features = ["full"] }
+tokio-test = "0.4"
