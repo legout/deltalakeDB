@@ -1,23 +1,26 @@
 //! deltalakedb-core
 //!
 //! Core domain models and actions for the SQL-backed Delta Lake metadata plane.
+//! Provides pluggable abstractions for transaction log operations supporting both
+//! file-based and SQL-backed implementations.
 
 #![warn(missing_docs)]
 
-/// Placeholder module to ensure the crate compiles.
-pub mod placeholder {
-    /// Placeholder function.
-    pub fn hello() -> &'static str {
-        "Hello from deltalakedb-core"
-    }
-}
+pub mod actions;
+pub mod error;
+pub mod file;
+pub mod reader;
+pub mod writer;
+
+// Re-export key types for convenience
+pub use actions::*;
+pub use error::{TxnLogError, TxnLogResult};
+pub use file::{FileTxnLogReader, FileTxnLogWriter};
+pub use reader::{TableSnapshot, TxnLogReader, TxnLogReaderExt};
+pub use writer::{Transaction, TxnLogWriter, TxnLogWriterExt};
 
 #[cfg(test)]
-mod tests {
-    use super::*;
+mod tests;
 
-    #[test]
-    fn placeholder_hello() {
-        assert_eq!(placeholder::hello(), "Hello from deltalakedb-core");
-    }
-}
+#[cfg(test)]
+mod integration_tests;
