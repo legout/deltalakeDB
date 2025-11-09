@@ -1,0 +1,19 @@
+[package]
+name = "deltalakedb-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish = false
+
+[dependencies]
+# Placeholder for future dependencies
+# serde = { workspace = true }
+# serde_json = { workspace = true }
+# thiserror = { workspace = true }
+# tracing = { workspace = true }
+
+[dev-dependencies]
+# Placeholder for future dev dependencies
+# tokio-test = "0.4"

@@ -1,0 +1,25 @@
+[workspace]
+members = ["crates/core", "crates/sql", "crates/mirror"]
+resolver = "2"
+
+[workspace.package]
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.75"
+license = "MIT OR Apache-2.0"
+authors = ["Project Authors"]
+homepage = "https://github.com/your-org/deltalakeDB"
+repository = "https://github.com/your-org/deltalakeDB"
+publish = false
+
+[workspace.dependencies]
+# Placeholder for future dependencies
+# delta-rs = { version = "...", default-features = false }
+# sqlx = { version = "...", default-features = false, features = ["runtime-tokio-rustls", "postgres", "sqlite"] }
+# duckdb = { version = "..." }
+# tokio = { version = "1", features = ["full"] }
+# serde = { version = "1", features = ["derive"] }
+# serde_json = "1"
+# thiserror = "1"
+# tracing = "0.1"
+# tracing-subscriber = { version = "0.3", features = ["env-filter"] }

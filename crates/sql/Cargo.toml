@@ -1,0 +1,20 @@
+[package]
+name = "deltalakedb-sql"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish = false
+
+[dependencies]
+# Placeholder for future dependencies
+# deltalakedb-core = { path = "../core" }
+# sqlx = { workspace = true }
+# duckdb = { workspace = true }
+# tokio = { workspace = true }
+# tracing = { workspace = true }
+
+[dev-dependencies]
+# Placeholder for future dev dependencies
+# tokio-test = "0.4"

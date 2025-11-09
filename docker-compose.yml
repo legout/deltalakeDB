@@ -1,0 +1,98 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: deltalakedb-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: deltalakedb
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  minio:
+    image: minio/minio:latest
+    container_name: deltalakedb-minio
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - minio_data:/data
+
+  seaweedfs-s3:
+    image: chrislusf/seaweedfs:latest
+    container_name: deltalakedb-seaweedfs
+    ports:
+      - "8333:8333"
+      - "9333:9333"
+    command: server -s3 -s3.config=/etc/seaweedfs/s3.json -dir=/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost:9333/cluster/status | grep -q 'IsLeader' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - seaweedfs_data:/data
+      - ./dev/seaweedfs-s3.json:/etc/seaweedfs/s3.json:ro
+
+  rustfs:
+    image: rustfs/rustfs:alpha
+    container_name: deltalakedb-rustfs
+    ports:
+      - "9100:9000"
+      - "9101:9000"
+    environment:
+      RUSTFS_USERNAME: rustfsadmin
+      RUSTFS_PASSWORD: rustfsadmin
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost:9000/ | grep -q 'ListAllMyBucketsResult' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - rustfs_data:/data
+      - rustfs_logs:/logs
+
+  garage:
+    image: dxflrs/garage:v2.1.0
+    container_name: deltalakedb-garage
+    ports:
+      - "3900:3900"
+      - "3901:3901"
+      - "3902:3902"
+      - "3903:3903"
+    environment:
+      RUST_LOG: garage=info
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost:3903/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    volumes:
+      - ./dev/garage.toml:/etc/garage.toml:ro
+      - garage_meta:/var/lib/garage/meta
+      - garage_data:/var/lib/garage/data
+
+volumes:
+  postgres_data:
+  minio_data:
+  seaweedfs_data:
+  rustfs_data:
+  rustfs_logs:
+  garage_meta:
+  garage_data:
