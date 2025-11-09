@@ -69,3 +69,22 @@ Status: early scaffolding; spec and PRD in place, implementation pending (see `S
 - Python layer: `deltalake` for compatibility/shims; bindings via `pyo3` (wheels built with `maturin`).
 - Object store: provider SDKs as needed (or reuse `delta-rs`) to write `_delta_log/`.
 - Tooling: OpenSpec CLI for spec/change management; cargo + rustfmt/clippy; pytest/ruff/black/mypy in dev/CI.
+
+## Implementation Order
+The following sequence minimizes risk and enables incremental value. Items marked (parallel) can start once their dependency exists.
+
+1. add-txnlog-abstractions — Land traits and file-backed impl (PRD §15 M0)
+2. add-sql-schema-core — Create authoritative SQL schema (PRD §7)
+3. add-sql-read-path-postgres — Postgres reader (PRD §4.1, §15 M1)
+4. add-sql-write-path-postgres — Postgres writer with CAS (PRD §4.2, §15 M2)
+5. add-mirror-json-after-commit — JSON mirroring after DB commit (PRD §4.2, §17)
+6. add-mirror-reconciler-and-alerts — Ensure eventual convergence + SLOs (PRD §8, §10)
+7. add-mirror-parquet-checkpoints — Periodic checkpoints (PRD §17)
+8. add-multi-table-transaction-postgres — Atomic multi-table commits (PRD §4.3, §15 M3)
+
+Parallel/Supporting tracks:
+- add-deltasql-uri-scheme — Can start after step 1; needed for UX (PRD §4.4, §11)
+- add-migration-bootstrap-cli — After step 2 for early adoption (PRD §12)
+- add-sql-read-path-sqlite — After step 2 (PRD §13 Phase 1)
+- add-sql-read-path-duckdb — After step 2 (PRD §13 Phase 1)
+- add-observability-baseline — Begin at step 3 and expand through step 8 (PRD §10)
