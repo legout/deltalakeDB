@@ -1,0 +1,27 @@
+[package]
+name = "delkalakedb-python"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+name = "delkalakedb"
+crate-type = ["cdylib"]
+
+[dependencies]
+deltalakedb-core = { path = "../core" }
+deltalakedb-sql = { path = "../sql" }
+pyo3 = { workspace = true, features = ["extension-module", "abi3-py312"] }
+pyo3-async-runtimes = { workspace = true, features = ["tokio-runtime"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

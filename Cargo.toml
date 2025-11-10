@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/core", "crates/sql", "crates/mirror"]
+members = ["crates/core", "crates/sql", "crates/mirror", "crates/python"]
 resolver = "2"
 
 [workspace.package]
@@ -26,4 +26,6 @@ async-trait = "0.1"
 uuid = { version = "1", features = ["v4"] }
 tempfile = "3.8"
 chrono = { version = "0.4", features = ["serde"] }
-# tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+pyo3 = { version = "0.27", features = ["extension-module", "abi3-py312"] }
+pyo3-async-runtimes = { version = "0.27", features = ["tokio-runtime"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

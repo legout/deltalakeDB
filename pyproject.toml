@@ -1,6 +1,6 @@
 [build-system]
-requires = ["hatchling>=1.24.2"]
-build-backend = "hatchling.build"
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
 
 [project]
 name = "delkalakedb"
@@ -11,7 +11,10 @@ requires-python = ">=3.12"
 # License TBD; propose adding via a later change
 # license = { text = "" }
 authors = [{ name = "Project Authors" }]
-dependencies = []
+dependencies = [
+    "pydantic>=2.0.0",
+    "typing-extensions>=4.0.0",
+]
 
 [project.optional-dependencies]
 # Install with: `uv sync --extra dev`
@@ -39,3 +42,8 @@ python_version = "3.12"
 warn_unused_ignores = true
 warn_redundant_casts = true
 strict = true
+
+[tool.maturin]
+python-source = "python"
+module-name = "delkalakedb._delkalakedb"
+features = ["pyo3/extension-module"]

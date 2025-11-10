@@ -225,7 +225,6 @@ impl MultiTableWriter {
         actions.validate()?;
         Ok(actions)
     }
-}
 
     /// Commit a multi-table transaction atomically.
     #[instrument(skip(self, transaction))]
@@ -1394,26 +1393,7 @@ impl MultiTableWriter {
     }
 }
 }
-            Ok(Err(_)) => {
-                error!("Mirroring task for table {} version {} was cancelled", table_id, version);
-                self.update_mirror_status_failed(&table_id, version, "Task cancelled").await;
-                MirroringResult {
-                    table_id: table_id.clone(),
-                    version,
-                    success: false,
-                    error: Some("Task cancelled".to_string()),
-                }
-            }
-            Err(_) => {
-                error!("Mirroring timeout for table {} version {}", table_id, version);
-                self.update_mirror_status_failed(&table_id, version, "Timeout").await;
-                MirroringResult {
-                    table_id: table_id.clone(),
-                    version,
-                    success: false,
-                    error: Some("Timeout".to_string()),
-                }
-            }
+}
 
     /// Wait for all mirroring operations to complete with enhanced failure handling.
     async fn wait_for_mirroring_completion(
@@ -2417,8 +2397,8 @@ impl MultiTableWriter {
             } else {
                 tx2
             }
-        }
     }
+}
 
 /// Builder for creating TableActions with fluent API.
 #[derive(Debug)]
