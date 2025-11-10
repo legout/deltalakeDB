@@ -8,13 +8,16 @@ authors.workspace = true
 publish = false
 
 [dependencies]
-# Placeholder for future dependencies
-# deltalakedb-core = { path = "../core" }
-# sqlx = { workspace = true }
-# duckdb = { workspace = true }
-# tokio = { workspace = true }
-# tracing = { workspace = true }
+deltalakedb-core = { path = "../core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
 
 [dev-dependencies]
-# Placeholder for future dev dependencies
-# tokio-test = "0.4"
+tokio-test = "0.4"
+tempfile = { workspace = true }

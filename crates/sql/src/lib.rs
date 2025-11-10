@@ -4,6 +4,15 @@
 
 #![warn(missing_docs)]
 
+pub mod connection;
+pub mod mirror;
+pub mod multi_table;
+pub mod schema;
+pub mod writer;
+
+#[cfg(test)]
+mod isolation_test;
+
 /// Placeholder module to ensure the crate compiles.
 pub mod placeholder {
     /// Placeholder function.
