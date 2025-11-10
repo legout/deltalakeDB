@@ -2,6 +2,7 @@
 
 use crate::error::{MirrorError, MirrorResult, StorageError};
 use crate::generators::DeltaFile;
+use crate::recovery::{CircuitBreaker, CircuitBreakerConfig};
 use async_trait::async_trait;
 use object_store::{path::Path, ObjectStore};
 use std::collections::HashMap;
@@ -283,6 +284,25 @@ pub fn create_storage(config: &StorageConfig) -> MirrorResult<Arc<dyn MirrorStor
     };
 
     Ok(storage)
+}
+
+/// Create a storage backend with optional circuit breaker protection
+pub fn create_storage_with_circuit_breaker(
+    config: &StorageConfig,
+    circuit_breaker_config: Option<CircuitBreakerConfig>,
+) -> MirrorResult<Arc<dyn MirrorStorage>> {
+    let storage = create_storage(config)?;
+
+    if let Some(cb_config) = circuit_breaker_config {
+        if cb_config.enabled {
+            let circuit_storage = CircuitBreakerStorage::new(storage, cb_config);
+            Ok(Arc::new(circuit_storage))
+        } else {
+            Ok(storage)
+        }
+    } else {
+        Ok(storage)
+    }
 }
 
 /// Generic storage implementation using object-store crate
@@ -570,6 +590,155 @@ pub async fn create_test_storage() -> MirrorResult<Arc<dyn MirrorStorage>> {
     create_storage(&config)
 }
 
+/// Circuit breaker wrapper for storage operations
+pub struct CircuitBreakerStorage {
+    inner: Arc<dyn MirrorStorage>,
+    put_circuit_breaker: Arc<CircuitBreaker<Arc<dyn MirrorStorage>>>,
+    get_circuit_breaker: Arc<CircuitBreaker<Arc<dyn MirrorStorage>>>,
+    list_circuit_breaker: Arc<CircuitBreaker<Arc<dyn MirrorStorage>>>,
+    delete_circuit_breaker: Arc<CircuitBreaker<Arc<dyn MirrorStorage>>>,
+}
+
+impl CircuitBreakerStorage {
+    /// Create a new circuit breaker storage wrapper
+    pub fn new(
+        storage: Arc<dyn MirrorStorage>,
+        circuit_breaker_config: CircuitBreakerConfig,
+    ) -> Self {
+        Self {
+            put_circuit_breaker: Arc::new(CircuitBreaker::new(
+                storage.clone(),
+                circuit_breaker_config.clone(),
+            )),
+            get_circuit_breaker: Arc::new(CircuitBreaker::new(
+                storage.clone(),
+                circuit_breaker_config.clone(),
+            )),
+            list_circuit_breaker: Arc::new(CircuitBreaker::new(
+                storage.clone(),
+                circuit_breaker_config.clone(),
+            )),
+            delete_circuit_breaker: Arc::new(CircuitBreaker::new(
+                storage.clone(),
+                circuit_breaker_config,
+            )),
+            inner: storage,
+        }
+    }
+
+    /// Get circuit breaker statistics for all operations
+    pub async fn get_circuit_breaker_stats(&self) -> crate::recovery::CircuitBreakerStats {
+        // Return the stats from the put circuit breaker as a representative
+        self.put_circuit_breaker.get_stats().await
+    }
+
+    /// Force open all circuit breakers
+    pub async fn force_open_all(&self) {
+        self.put_circuit_breaker.force_open().await;
+        self.get_circuit_breaker.force_open().await;
+        self.list_circuit_breaker.force_open().await;
+        self.delete_circuit_breaker.force_open().await;
+    }
+
+    /// Force close all circuit breakers
+    pub async fn force_close_all(&self) {
+        self.put_circuit_breaker.force_close().await;
+        self.get_circuit_breaker.force_close().await;
+        self.list_circuit_breaker.force_close().await;
+        self.delete_circuit_breaker.force_close().await;
+    }
+
+    /// Reset all circuit breakers
+    pub async fn reset_all(&self) {
+        self.put_circuit_breaker.reset().await;
+        self.get_circuit_breaker.reset().await;
+        self.list_circuit_breaker.reset().await;
+        self.delete_circuit_breaker.reset().await;
+    }
+}
+
+#[async_trait]
+impl MirrorStorage for CircuitBreakerStorage {
+    async fn put_file(&self, path: &str, content: Vec<u8>) -> MirrorResult<()> {
+        self.put_circuit_breaker.execute(|storage| {
+            // Use blocking wrapper for async trait
+            futures::executor::block_on(storage.put_file(path, content))
+        }).await
+    }
+
+    async fn put_file_with_metadata(
+        &self,
+        path: &str,
+        content: Vec<u8>,
+        metadata: HashMap<String, String>,
+    ) -> MirrorResult<()> {
+        self.put_circuit_breaker.execute(|storage| {
+            futures::executor::block_on(storage.put_file_with_metadata(path, content, metadata))
+        }).await
+    }
+
+    async fn get_file(&self, path: &str) -> MirrorResult<Vec<u8>> {
+        self.get_circuit_breaker.execute(|storage| {
+            futures::executor::block_on(storage.get_file(path))
+        }).await
+    }
+
+    async fn file_exists(&self, path: &str) -> MirrorResult<bool> {
+        self.get_circuit_breaker.execute(|storage| {
+            futures::executor::block_on(storage.file_exists(path))
+        }).await
+    }
+
+    async fn delete_file(&self, path: &str) -> MirrorResult<()> {
+        self.delete_circuit_breaker.execute(|storage| {
+            futures::executor::block_on(storage.delete_file(path))
+        }).await
+    }
+
+    async fn list_files(&self, prefix: &str) -> MirrorResult<Vec<String>> {
+        self.list_circuit_breaker.execute(|storage| {
+            futures::executor::block_on(storage.list_files(prefix))
+        }).await
+    }
+
+    async fn list_files_paginated(
+        &self,
+        prefix: &str,
+        offset: Option<usize>,
+        limit: Option<usize>,
+    ) -> MirrorResult<Vec<String>> {
+        self.list_circuit_breaker.execute(|storage| {
+            futures::executor::block_on(storage.list_files_paginated(prefix, offset, limit))
+        }).await
+    }
+
+    async fn get_file_metadata(&self, path: &str) -> MirrorResult<FileMetadata> {
+        self.get_circuit_breaker.execute(|storage| {
+            futures::executor::block_on(storage.get_file_metadata(path))
+        }).await
+    }
+
+    fn backend_type(&self) -> StorageBackend {
+        self.inner.backend_type()
+    }
+
+    fn config(&self) -> &StorageConfig {
+        self.inner.config()
+    }
+
+    async fn health_check(&self) -> MirrorResult<bool> {
+        self.get_circuit_breaker.execute(|storage| {
+            futures::executor::block_on(storage.health_check())
+        }).await
+    }
+
+    async fn get_storage_stats(&self) -> MirrorResult<StorageStats> {
+        self.list_circuit_breaker.execute(|storage| {
+            futures::executor::block_on(storage.get_storage_stats())
+        }).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -641,5 +810,26 @@ mod tests {
             }
             _ => assert!(false),
         }
+    }
+
+    #[tokio::test]
+    async fn test_circuit_breaker_storage_creation() {
+        // This test requires a mock storage, so we'll test the creation logic
+        let config = StorageConfig::default();
+        let cb_config = CircuitBreakerConfig::default();
+
+        // Test that the function exists and doesn't panic
+        let result = create_storage_with_circuit_breaker(&config, Some(cb_config));
+        // We expect this to succeed since we have default local storage config
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_circuit_breaker_config_default() {
+        let config = CircuitBreakerConfig::default();
+        assert_eq!(config.failure_threshold, 5);
+        assert_eq!(config.recovery_threshold, 3);
+        assert_eq!(config.recovery_timeout_secs, 60);
+        assert!(config.enabled);
     }
 }

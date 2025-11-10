@@ -23,6 +23,7 @@ pub mod generators;
 pub mod storage;
 pub mod pipeline;
 pub mod monitoring;
+pub mod recovery;
 pub mod config;
 pub mod error;
 
@@ -31,6 +32,7 @@ pub use generators::{DeltaJsonGenerator, DeltaFormat};
 pub use storage::{MirrorStorage, MirrorConfig, StorageBackend};
 pub use pipeline::{MirrorPipeline, MirrorTask, MirrorStatus};
 pub use monitoring::{MirrorMonitor, MirrorMetrics, MirrorHealth};
+pub use recovery::{Reconciler, CircuitBreaker, RecoveryConfig, RecoveryStats};
 pub use config::MirrorEngineConfig;
 pub use error::{MirrorError, MirrorResult};
 
@@ -45,8 +47,15 @@ pub struct DeltaMirror {
 impl DeltaMirror {
     /// Create a new DeltaMirror instance with the given configuration
     pub async fn new(config: MirrorEngineConfig) -> MirrorResult<Self> {
-        // Initialize storage backend
-        let storage = storage::create_storage(&config.storage)?;
+        // Initialize storage backend with circuit breaker if recovery is enabled
+        let storage = if config.recovery.enabled {
+            storage::create_storage_with_circuit_breaker(
+                &config.storage,
+                Some(config.recovery.circuit_breaker.clone()),
+            )?
+        } else {
+            storage::create_storage(&config.storage)?
+        };
 
         // Create core engine
         let engine = Arc::new(DeltaMirrorEngine::new(

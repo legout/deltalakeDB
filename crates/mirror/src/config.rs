@@ -2,6 +2,7 @@
 
 use crate::{
     error::{MirrorError, MirrorResult},
+    recovery::{RecoveryConfig, ReconcilerConfig, CircuitBreakerConfig},
     MirrorConfig, StorageConfig, MirroringConfig, PerformanceConfig,
     S3Config, AzureConfig, GcsConfig, LocalConfig, StorageBackend,
 };
@@ -20,6 +21,8 @@ pub struct MirrorEngineConfig {
     pub performance: PerformanceConfig,
     /// Monitoring configuration
     pub monitoring: MonitoringConfig,
+    /// Recovery configuration
+    pub recovery: RecoveryConfig,
     /// JSON generation configuration
     pub json_generation: JsonGenerationConfig,
     /// Parquet generation configuration
@@ -331,6 +334,7 @@ impl EnvironmentConfig {
         let mirroring = Self::load_mirroring_config()?;
         let performance = Self::load_performance_config()?;
         let monitoring = Self::load_monitoring_config()?;
+        let recovery = Self::load_recovery_config()?;
         let json_generation = Self::load_json_generation_config()?;
         let parquet_generation = Self::load_parquet_generation_config()?;
 
@@ -339,6 +343,7 @@ impl EnvironmentConfig {
             mirroring,
             performance,
             monitoring,
+            recovery,
             json_generation,
             parquet_generation,
         })
@@ -696,6 +701,7 @@ impl Default for MirrorEngineConfig {
             mirroring: MirroringConfig::default(),
             performance: PerformanceConfig::default(),
             monitoring: MonitoringConfig::default(),
+            recovery: RecoveryConfig::default(),
             json_generation: JsonGenerationConfig::default(),
             parquet_generation: ParquetGenerationConfig::default(),
         }
@@ -778,6 +784,98 @@ impl Default for ParquetGenerationConfig {
                 },
             },
         }
+    }
+
+    /// Load recovery configuration from environment
+    fn load_recovery_config() -> MirrorResult<RecoveryConfig> {
+        let reconciler_config = ReconcilerConfig {
+            check_interval_secs: std::env::var("DELTA_MIRROR_RECONCILER_CHECK_INTERVAL_SECS")
+                .unwrap_or_else(|_| "30".to_string())
+                .parse()
+                .unwrap_or(30),
+            retry_policy: crate::recovery::RetryPolicy {
+                max_retries: std::env::var("DELTA_MIRROR_MAX_RETRIES")
+                    .unwrap_or_else(|_| "5".to_string())
+                    .parse()
+                    .unwrap_or(5),
+                initial_backoff_ms: std::env::var("DELTA_MIRROR_INITIAL_BACKOFF_MS")
+                    .unwrap_or_else(|_| "1000".to_string())
+                    .parse()
+                    .unwrap_or(1000),
+                max_backoff_ms: std::env::var("DELTA_MIRROR_MAX_BACKOFF_MS")
+                    .unwrap_or_else(|_| "300000".to_string())
+                    .parse()
+                    .unwrap_or(300000),
+                backoff_multiplier: std::env::var("DELTA_MIRROR_BACKOFF_MULTIPLIER")
+                    .unwrap_or_else(|_| "2.0".to_string())
+                    .parse()
+                    .unwrap_or(2.0),
+                jitter_factor: std::env::var("DELTA_MIRROR_JITTER_FACTOR")
+                    .unwrap_or_else(|_| "0.1".to_string())
+                    .parse()
+                    .unwrap_or(0.1),
+                exponential_backoff: std::env::var("DELTA_MIRROR_EXPONENTIAL_BACKOFF")
+                    .unwrap_or_else(|_| "true".to_string())
+                    .parse()
+                    .unwrap_or(true),
+            },
+            max_concurrent_recoveries: std::env::var("DELTA_MIRROR_MAX_CONCURRENT_RECOVERIES")
+                .unwrap_or_else(|_| "3".to_string())
+                .parse()
+                .unwrap_or(3),
+            batch_size: std::env::var("DELTA_MIRROR_RECOVERY_BATCH_SIZE")
+                .unwrap_or_else(|_| "10".to_string())
+                .parse()
+                .unwrap_or(10),
+            enabled: std::env::var("DELTA_MIRROR_RECOVERY_ENABLED")
+                .unwrap_or_else(|_| "true".to_string())
+                .parse()
+                .unwrap_or(true),
+            max_recovery_age_hours: std::env::var("DELTA_MIRROR_MAX_RECOVERY_AGE_HOURS")
+                .unwrap_or_else(|_| "24".to_string())
+                .parse()
+                .unwrap_or(24),
+        };
+
+        let circuit_breaker_config = CircuitBreakerConfig {
+            failure_threshold: std::env::var("DELTA_MIRROR_CIRCUIT_BREAKER_FAILURE_THRESHOLD")
+                .unwrap_or_else(|_| "5".to_string())
+                .parse()
+                .unwrap_or(5),
+            recovery_threshold: std::env::var("DELTA_MIRROR_CIRCUIT_BREAKER_RECOVERY_THRESHOLD")
+                .unwrap_or_else(|_| "3".to_string())
+                .parse()
+                .unwrap_or(3),
+            recovery_timeout_secs: std::env::var("DELTA_MIRROR_CIRCUIT_BREAKER_RECOVERY_TIMEOUT_SECS")
+                .unwrap_or_else(|_| "60".to_string())
+                .parse()
+                .unwrap_or(60),
+            half_open_success_rate: std::env::var("DELTA_MIRROR_CIRCUIT_BREAKER_HALF_OPEN_SUCCESS_RATE")
+                .unwrap_or_else(|_| "0.6".to_string())
+                .parse()
+                .unwrap_or(0.6),
+            min_operations: std::env::var("DELTA_MIRROR_CIRCUIT_BREAKER_MIN_OPERATIONS")
+                .unwrap_or_else(|_| "5".to_string())
+                .parse()
+                .unwrap_or(5),
+            enabled: std::env::var("DELTA_MIRROR_CIRCUIT_BREAKER_ENABLED")
+                .unwrap_or_else(|_| "true".to_string())
+                .parse()
+                .unwrap_or(true),
+        };
+
+        Ok(RecoveryConfig {
+            reconciler: reconciler_config,
+            circuit_breaker: circuit_breaker_config,
+            enabled: std::env::var("DELTA_MIRROR_RECOVERY_ENABLED")
+                .unwrap_or_else(|_| "true".to_string())
+                .parse()
+                .unwrap_or(true),
+            max_concurrent_recoveries: std::env::var("DELTA_MIRROR_MAX_CONCURRENT_RECOVERIES")
+                .unwrap_or_else(|_| "3".to_string())
+                .parse()
+                .unwrap_or(3),
+        })
     }
 }
 

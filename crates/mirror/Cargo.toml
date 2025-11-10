@@ -33,6 +33,12 @@ backoff = { version = "0.4", features = ["tokio"] }
 metrics = "0.21"
 tempfile = "3.0"
 
+# Random number generation for jitter
+rand = "0.8"
+
+# Async utilities
+futures = "0.3"
+
 [dev-dependencies]
 tokio-test = "0.4"
 tempfile = "3.0"

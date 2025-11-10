@@ -5,6 +5,7 @@ use crate::generators::{DeltaFile, DeltaJsonGenerator};
 use crate::storage::MirrorStorage;
 use crate::config::{MirrorEngineConfig, PerformanceConfig};
 use crate::engine::DeltaMirrorEngine;
+use crate::recovery::{Reconciler, RecoveryConfig};
 use crate::{MirrorStatus, TaskStatus};
 use deltalakedb_core::{Table, Commit, Action};
 use std::collections::{HashMap, VecDeque};
@@ -26,6 +27,7 @@ pub struct MirrorPipeline {
     storage: Arc<dyn MirrorStorage>,
     engine: Arc<DeltaMirrorEngine>,
     task_queue: Arc<RwLock<TaskQueue>>,
+    reconciler: Option<Arc<Reconciler>>,
     shutdown_tx: mpsc::Sender<()>,
     shutdown_rx: Arc<RwLock<mpsc::Receiver<()>>>,
 }
@@ -64,6 +66,7 @@ impl MirrorPipeline {
         let processor_queue = task_queue.clone();
         let processor_engine = engine.clone();
         let processor_storage = storage.clone();
+        let processor_reconciler = None; // Will be set later after reconciler is created
         let mut processor_shutdown_rx = shutdown_rx.clone();
 
         tokio::spawn(async move {
@@ -78,6 +81,7 @@ impl MirrorPipeline {
                                     &processor_engine,
                                     &processor_storage,
                                     &processor_queue,
+                                    &processor_reconciler,
                                     task
                                 ).await {
                                     tracing::error!("Error processing task: {}", e);
@@ -97,11 +101,27 @@ impl MirrorPipeline {
             }
         });
 
+        // Initialize reconciler if recovery is enabled
+        let reconciler = if config.recovery.enabled {
+            let reconciler = Reconciler::new(
+                config.recovery.reconciler.clone(),
+                engine.clone(),
+                storage.clone(),
+            ).await?;
+
+            // Start reconciler background task
+            reconciler.start().await?;
+            Some(Arc::new(reconciler))
+        } else {
+            None
+        };
+
         Ok(Self {
             config: performance,
             storage,
             engine,
             task_queue,
+            reconciler,
             shutdown_tx,
             shutdown_rx: Arc::new(RwLock::new(shutdown_rx)),
         })
@@ -177,6 +197,7 @@ impl MirrorPipeline {
         engine: &DeltaMirrorEngine,
         storage: &Arc<dyn MirrorStorage>,
         queue: &Arc<RwLock<TaskQueue>>,
+        reconciler: &Option<Arc<Reconciler>>,
         task: MirrorTask,
     ) -> MirrorResult<()> {
         let task_id = task.task_id();
@@ -207,7 +228,7 @@ impl MirrorPipeline {
 
         let duration = start_time.elapsed();
 
-        // Update final status
+        // Update final status and handle failed tasks
         let status = match result {
             Ok(bytes_written) => MirrorStatus {
                 task_id,
@@ -221,17 +242,26 @@ impl MirrorPipeline {
                 total_files: 1,
                 bytes_written,
             },
-            Err(error) => MirrorStatus {
-                task_id,
-                table_id: task.table_id(),
-                status: TaskStatus::Failed,
-                progress: 0.0,
-                started_at: Utc::now(),
-                estimated_completion: None,
-                error_message: Some(error.to_string()),
-                files_processed: 0,
-                total_files: 1,
-                bytes_written: 0,
+            Err(error) => {
+                // Add failed task to reconciler if available
+                if let Some(reconciler) = reconciler {
+                    if let Err(reconciler_err) = reconciler.add_failed_task(task.clone(), error.to_string()).await {
+                        tracing::error!("Failed to add task to reconciler: {}", reconciler_err);
+                    }
+                }
+
+                MirrorStatus {
+                    task_id,
+                    table_id: task.table_id(),
+                    status: TaskStatus::Failed,
+                    progress: 0.0,
+                    started_at: Utc::now(),
+                    estimated_completion: None,
+                    error_message: Some(error.to_string()),
+                    files_processed: 0,
+                    total_files: 1,
+                    bytes_written: 0,
+                }
             },
         };
 
@@ -341,6 +371,11 @@ impl MirrorPipeline {
         // Send shutdown signal
         let _ = self.shutdown_tx.send(()).await;
 
+        // Shutdown reconciler if enabled
+        if let Some(reconciler) = &self.reconciler {
+            reconciler.shutdown().await?;
+        }
+
         // Wait for tasks to complete
         sleep(Duration::from_secs(5)).await;
 
@@ -361,6 +396,15 @@ impl MirrorPipeline {
             max_queue_size: queue.max_size,
             worker_count: self.config.max_concurrent_tasks,
             is_shutting_down: self.shutdown_rx.read().await.try_recv().is_ok(),
+        }
+    }
+
+    /// Get recovery statistics
+    pub async fn get_recovery_stats(&self) -> Option<crate::recovery::RecoveryStats> {
+        if let Some(reconciler) = &self.reconciler {
+            Some(reconciler.get_stats().await)
+        } else {
+            None
         }
     }
 
