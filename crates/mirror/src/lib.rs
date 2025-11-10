@@ -35,11 +35,13 @@
 pub mod checkpoint;
 pub mod engine;
 pub mod error;
+pub mod reconciler;
 pub mod serializer;
 
 pub use checkpoint::CheckpointWriter;
 pub use engine::MirrorEngine;
 pub use error::{MirrorError, MirrorResult};
+pub use reconciler::{MirrorReconciler, ReconciliationConfig};
 
 #[cfg(test)]
 mod tests {
