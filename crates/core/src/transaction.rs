@@ -107,34 +107,59 @@ impl TransactionResult {
     }
 }
 
-/// Error type for transaction operations.
+/// Error type for multi-table transaction operations.
+///
+/// Errors that can occur during staged updates and commits across multiple Delta tables.
+/// This error type is specifically for transaction coordination issues (conflicts, timeouts, limits).
+/// For metadata and storage errors, see `TxnLogError`.
+///
+/// # Examples
+///
+/// ```ignore
+/// use deltalakedb::transaction::{TransactionError, TransactionResult};
+///
+/// // Version conflict detected between staged and actual version
+/// if let Err(TransactionError::VersionConflict { table_id, expected, actual }) = result {
+///     eprintln!("Table {} version changed from {} to {}", table_id, expected, actual);
+/// }
+/// ```
 #[derive(Debug, Clone)]
 pub enum TransactionError {
-    /// Version conflict for a table
+    /// Version conflict: staged version doesn't match actual table version
     VersionConflict {
+        /// ID of the table with conflict
         table_id: Uuid,
+        /// Expected version when transaction was started
         expected: i64,
+        /// Actual version in the metadata store
         actual: i64,
     },
-    /// Validation error
+    /// Data validation failed for table updates
     ValidationError {
+        /// ID of the table that failed validation
         table_id: Uuid,
+        /// Description of the validation error
         message: String,
     },
-    /// Too many tables
+    /// Transaction exceeds maximum table limit
     TooManyTables {
+        /// Number of tables in transaction
         count: usize,
+        /// Maximum allowed tables
         limit: usize,
     },
-    /// Too many files
+    /// Table exceeds maximum file limit for transaction
     TooManyFiles {
+        /// ID of the table exceeding limit
         table_id: Uuid,
+        /// Number of files in transaction
         count: usize,
+        /// Maximum allowed files per table
         limit: usize,
     },
-    /// Transaction timeout
+    /// Transaction operation timed out
     TransactionTimeout,
-    /// Generic error
+    /// Generic transaction error
     Other(String),
 }
 
@@ -148,7 +173,7 @@ impl std::fmt::Display for TransactionError {
             } => {
                 write!(
                     f,
-                    "Version conflict for table {}: expected {}, got {}",
+                    "Version conflict for table {}: table version changed from {} to {} during transaction",
                     table_id, expected, actual
                 )
             }
@@ -156,7 +181,11 @@ impl std::fmt::Display for TransactionError {
                 write!(f, "Validation error for table {}: {}", table_id, message)
             }
             TransactionError::TooManyTables { count, limit } => {
-                write!(f, "Too many tables: {} (limit: {})", count, limit)
+                write!(
+                    f,
+                    "Too many tables in transaction: {} (maximum: {})",
+                    count, limit
+                )
             }
             TransactionError::TooManyFiles {
                 table_id,
@@ -165,12 +194,12 @@ impl std::fmt::Display for TransactionError {
             } => {
                 write!(
                     f,
-                    "Too many files in table {}: {} (limit: {})",
+                    "Too many files in table {}: {} (maximum: {})",
                     table_id, count, limit
                 )
             }
             TransactionError::TransactionTimeout => {
-                write!(f, "Transaction timeout")
+                write!(f, "Transaction operation timed out")
             }
             TransactionError::Other(msg) => write!(f, "{}", msg),
         }
@@ -178,6 +207,13 @@ impl std::fmt::Display for TransactionError {
 }
 
 impl std::error::Error for TransactionError {}
+
+/// Convert TxnLogError to TransactionError for upstream handling
+impl From<crate::error::TxnLogError> for TransactionError {
+    fn from(err: crate::error::TxnLogError) -> Self {
+        TransactionError::Other(format!("Metadata error: {}", err))
+    }
+}
 
 /// Result type for transaction operations.
 pub type TransactionResult<T> = Result<T, TransactionError>;

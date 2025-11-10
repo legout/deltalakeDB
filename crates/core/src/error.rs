@@ -1,13 +1,32 @@
 //! Error types for transaction log operations.
+//!
+//! This module defines a hierarchical error system for all deltalakedb operations:
+//!
+//! **Error Hierarchy:**
+//! - `DeltaLakeError` (base trait for all errors)
+//!   - `TxnLogError` (transaction log operations)
+//!   - `TransactionError` (multi-table transactions) - implemented in transaction.rs
+//!   - `TableError` (table operations) - implemented in table.rs
+//!   - `UriError` (URI parsing) - implemented in uri.rs
+//!
+//! **Error Handling Strategy:**
+//! - All error types implement `std::error::Error` for trait interoperability
+//! - `From` trait implemented for automatic error conversion
+//! - Error messages are user-friendly and actionable
+//! - Errors preserve context (table IDs, versions, etc.)
 
 use std::io;
 use thiserror::Error;
 
 /// Errors that can occur during transaction log operations.
+///
+/// This is a core error type covering metadata, storage, and serialization issues.
+/// For transaction-specific errors, see `TransactionError`.
+/// For table operations, see `TableError`.
 #[derive(Error, Debug)]
 pub enum TxnLogError {
     /// Version conflict: expected version doesn't match actual version
-    #[error("Version conflict: expected {expected}, got {actual}")]
+    #[error("Version conflict: expected version {expected}, but found {actual}")]
     VersionConflict {
         /// Expected version number
         expected: i64,
@@ -15,7 +34,7 @@ pub enum TxnLogError {
         actual: i64,
     },
 
-    /// Table was not found
+    /// Table was not found in the metadata store
     #[error("Table not found: {0}")]
     TableNotFound(String),
 
@@ -23,18 +42,42 @@ pub enum TxnLogError {
     #[error("IO error: {0}")]
     IoError(#[from] io::Error),
 
-    /// Serialization/deserialization error
+    /// Serialization/deserialization error (typically JSON)
     #[error("Serialization error: {0}")]
     SerializationError(String),
 
-    /// Generic error
+    /// Generic error for other metadata operations
     #[error("{0}")]
     Other(String),
 }
 
+/// Automatic conversion from JSON errors to TxnLogError
 impl From<serde_json::Error> for TxnLogError {
     fn from(err: serde_json::Error) -> Self {
         TxnLogError::SerializationError(err.to_string())
+    }
+}
+
+/// Implement Display for better error formatting
+impl std::fmt::Display for TxnLogError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TxnLogError::VersionConflict { expected, actual } => {
+                write!(f, "Version conflict: expected {}, but found {}", expected, actual)
+            }
+            TxnLogError::TableNotFound(name) => {
+                write!(f, "Table not found: {}", name)
+            }
+            TxnLogError::IoError(err) => {
+                write!(f, "IO error: {}", err)
+            }
+            TxnLogError::SerializationError(msg) => {
+                write!(f, "Serialization error: {}", msg)
+            }
+            TxnLogError::Other(msg) => {
+                write!(f, "{}", msg)
+            }
+        }
     }
 }
 

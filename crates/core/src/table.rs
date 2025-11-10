@@ -12,25 +12,49 @@ use crate::uri::{DeltaSqlUri, UriError};
 use std::sync::Arc;
 
 /// Error type for table operations.
+///
+/// High-level errors that can occur when opening, reading, or writing Delta tables.
+/// This error type aggregates errors from URI parsing, transaction log operations,
+/// and reader/writer availability.
+///
+/// # Error Handling Strategy
+///
+/// TableError provides composite error handling:
+/// - URI errors (invalid syntax, unsupported schemes)
+/// - Metadata errors (TxnLogError for transaction log operations)
+/// - Reader/Writer unavailability (missing implementation for URI scheme)
+///
+/// # Examples
+///
+/// ```ignore
+/// use deltalakedb::table::{DeltaTable, TableError};
+///
+/// match DeltaTable::open("invalid://uri").await {
+///     Err(TableError::UriError(e)) => eprintln!("Invalid URI: {}", e),
+///     Err(TableError::UnsupportedScheme(scheme)) => eprintln!("Scheme {} not supported", scheme),
+///     Err(TableError::ReaderNotAvailable(uri)) => eprintln!("No reader for: {}", uri),
+///     _ => {}
+/// }
+/// ```
 #[derive(Debug, thiserror::Error)]
 pub enum TableError {
-    /// URI parsing error
+    /// URI parsing error (syntax, validation)
     #[error("URI error: {0}")]
     UriError(#[from] UriError),
 
-    /// Transaction log error
+    /// Transaction log metadata operation failed
     #[error("Transaction log error: {0}")]
     TxnLogError(#[from] TxnLogError),
 
-    /// Reader not available for this URI scheme
+    /// No reader implementation available for this URI scheme
     #[error("No reader implementation available for URI: {0}")]
     ReaderNotAvailable(String),
 
-    /// Writer not available for this URI scheme
+    /// No writer implementation available for this URI scheme
     #[error("No writer implementation available for URI: {0}")]
     WriterNotAvailable(String),
 
-    /// Invalid URI scheme
+    /// URI scheme is not supported by this implementation
     #[error("Unsupported URI scheme: {0}. Use 'deltasql://', 's3://', 'file://', or other supported schemes")]
     UnsupportedScheme(String),
 }

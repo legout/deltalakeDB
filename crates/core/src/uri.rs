@@ -25,33 +25,57 @@ use thiserror::Error;
 use url::Url;
 
 /// Errors that can occur during URI parsing and handling.
+///
+/// URI errors occur when parsing or validating `deltasql://` URIs that specify
+/// connections to SQL-backed Delta table stores. This is a low-level error type
+/// that distinguishes URI-specific issues from metadata or transaction errors.
+///
+/// # URI Format
+///
+/// Expected format: `deltasql://[database]://[host]/[db]/[schema]/[table]`
+/// - `database`: postgres, sqlite, duckdb
+/// - `host`: server hostname or socket path
+/// - `db`: database name
+/// - `schema`: schema name (or namespace)
+/// - `table`: table name
+///
+/// # Examples
+///
+/// ```ignore
+/// use deltalakedb::uri::DeltaSqlUri;
+///
+/// match DeltaSqlUri::parse("deltasql://postgres://localhost/mydb/public/users") {
+///     Ok(uri) => println!("Parsed: {:?}", uri),
+///     Err(e) => eprintln!("Invalid URI: {}", e),
+/// }
+/// ```
 #[derive(Error, Debug)]
 pub enum UriError {
-    /// Invalid URI format
+    /// URI format is syntactically invalid
     #[error("Invalid URI: {0}")]
     InvalidUri(String),
 
-    /// Unsupported scheme (must be `deltasql`)
+    /// URI scheme is not supported or does not match expected format
     #[error("Unsupported URI scheme: {0}. Must use 'deltasql://'")]
     UnsupportedScheme(String),
 
-    /// Unknown database type in URI
+    /// Database type specified in URI is not supported
     #[error("Unknown database type: {0}. Supported: postgres, sqlite, duckdb")]
     UnknownDatabaseType(String),
 
-    /// Missing required component in URI
+    /// Required component is missing from URI (e.g., host, database, schema)
     #[error("Missing required {component} in URI")]
     MissingComponent { component: String },
 
-    /// Environment variable not set
+    /// Environment variable referenced in URI is not set
     #[error("Environment variable not set: {0}")]
     MissingEnvVar(String),
 
-    /// URL parsing error
+    /// URL parsing failed (invalid characters, malformed structure)
     #[error("URL parsing error: {0}")]
     UrlParseError(String),
 
-    /// Invalid parameter
+    /// A URI parameter has an invalid value or format
     #[error("Invalid {param}: {reason}")]
     InvalidParameter { param: String, reason: String },
 }
