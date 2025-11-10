@@ -1,11 +1,13 @@
 #[path = "../../sql/tests/common.rs"]
 mod schema;
 
+use arrow_array::{StringArray, StructArray};
 use chrono::{DateTime, Duration, Utc};
 use deltalakedb_mirror::{
     AlertSink, LagAlert, LagSeverity, LocalFsObjectStore, MirrorRunner, MirrorService,
     MirrorStatus, ObjectStore,
 };
+use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use serial_test::serial;
 use sqlx::postgres::PgPoolOptions;
 use std::sync::{Arc, Mutex};
@@ -18,7 +20,7 @@ struct FailStore;
 
 #[async_trait::async_trait]
 impl ObjectStore for FailStore {
-    async fn put_json(
+    async fn put_file(
         &self,
         _table_location: &str,
         _file_name: &str,
@@ -294,6 +296,64 @@ fn mirror_lag_alerts_trigger_thresholds() -> Result<(), Box<dyn std::error::Erro
         assert_eq!(alerts[0].severity, LagSeverity::Critical);
         assert!(alerts[0].lag_seconds >= 300);
         assert_eq!(alerts[0].table_id, table_id);
+
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+
+    Ok(())
+}
+
+#[test]
+#[serial]
+fn mirror_emits_checkpoint_on_interval() -> Result<(), Box<dyn std::error::Error>> {
+    let dsn = match std::env::var("PG_TEST_DSN") {
+        Ok(value) => value,
+        Err(_) => return Ok(()),
+    };
+
+    let runtime = Builder::new_current_thread().enable_all().build()?;
+    runtime.block_on(async move {
+        let pool = PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&dsn)
+            .await?;
+        schema::reset_catalog(&pool).await?;
+
+        let table_id = Uuid::new_v4();
+        let dir = TempDir::new()?;
+        bootstrap_table(&pool, table_id, dir.path().to_string_lossy().as_ref()).await?;
+        insert_commit(&pool, table_id, 0).await?;
+        insert_add_action(&pool, table_id, 0, "part-000").await?;
+        insert_mirror_status(&pool, table_id, 0, "PENDING").await?;
+
+        let runner = MirrorRunner::new(pool.clone(), LocalFsObjectStore::default());
+        let service = MirrorService::new(runner, RecordingAlertSink::default())
+            .with_checkpoint_interval(1)
+            .with_lag_thresholds(600, 1200);
+        service.run_once().await?;
+
+        let checkpoint = dir
+            .path()
+            .join("_delta_log")
+            .join("00000000000000000000.checkpoint.parquet");
+        assert!(checkpoint.exists(), "checkpoint file not written");
+
+        let file = std::fs::File::open(&checkpoint)?;
+        let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
+        let mut reader = builder.build()?;
+        let batch = reader.next().transpose()?.expect("batch");
+        let add_array = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<StructArray>()
+            .expect("add struct");
+        let path_array = add_array
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("path array");
+        let has_part = path_array.iter().flatten().any(|value| value == "part-000");
+        assert!(has_part, "checkpoint missing expected file path");
 
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;

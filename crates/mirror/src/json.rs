@@ -62,7 +62,7 @@ pub struct CommitInfo {
 }
 
 /// Protocol action payload.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct ProtocolPayload {
     /// Minimum reader version.
@@ -72,7 +72,7 @@ pub struct ProtocolPayload {
 }
 
 /// Metadata payload.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct MetaDataPayload {
     /// JSON schema for the table.

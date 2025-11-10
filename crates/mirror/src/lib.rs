@@ -4,6 +4,7 @@
 
 #![warn(missing_docs)]
 
+mod checkpoint;
 mod error;
 mod json;
 mod object_store;

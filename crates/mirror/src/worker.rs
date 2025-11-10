@@ -59,6 +59,11 @@ where
         self.pool.clone()
     }
 
+    /// Provides a clone of the object store implementation.
+    pub fn store(&self) -> S {
+        self.store.clone()
+    }
+
     /// Processes at most one pending mirror job.
     pub async fn process_next(&self) -> Result<Option<MirrorOutcome>, MirrorError> {
         let mut tx = self.pool.begin().await?;
@@ -72,7 +77,7 @@ where
         let digest = hex::encode(Sha256::digest(&bytes));
         let file_name = format!("{:020}.json", job.version);
 
-        let result = self.store.put_json(&job.location, &file_name, &bytes).await;
+        let result = self.store.put_file(&job.location, &file_name, &bytes).await;
 
         let outcome = match result {
             Ok(()) => {

@@ -6,11 +6,11 @@ use async_trait::async_trait;
 
 use crate::MirrorError;
 
-/// Minimal interface for writing mirrored commits to an object/object-like store.
+/// Minimal interface for writing mirrored artifacts to an object/object-like store.
 #[async_trait]
-pub trait ObjectStore: Send + Sync {
+pub trait ObjectStore: Send + Sync + Clone {
     /// Writes bytes to the `_delta_log` key for the provided table location.
-    async fn put_json(
+    async fn put_file(
         &self,
         table_location: &str,
         file_name: &str,
@@ -24,7 +24,7 @@ pub struct LocalFsObjectStore;
 
 #[async_trait]
 impl ObjectStore for LocalFsObjectStore {
-    async fn put_json(
+    async fn put_file(
         &self,
         table_location: &str,
         file_name: &str,
