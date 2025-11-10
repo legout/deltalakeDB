@@ -199,7 +199,17 @@ pub async fn cleanup_test_table(pool: &PgPool, table_id: Uuid) -> Result<()> {
 }
 
 /// Get database URL from environment or default
+/// 
+/// IMPORTANT: TEST_DATABASE_URL environment variable must be set to run tests.
+/// Default is a placeholder that will fail. Set to your test database connection string.
+/// 
+/// Example usage:
+/// Set environment variable with your test database credentials before running tests.
+/// Supports postgresql:// connection strings.
 pub fn get_test_database_url() -> String {
     std::env::var("TEST_DATABASE_URL")
-        .unwrap_or_else(|_| "postgresql://postgres:postgres@localhost/deltalakedb_test".to_string())
+        .unwrap_or_else(|_| {
+            // Must be set via environment variable for tests to run
+            "postgresql://localhost/deltalakedb_test".to_string()
+        })
 }
