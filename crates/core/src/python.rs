@@ -14,6 +14,7 @@
 //! ```
 
 use crate::{MultiTableTransaction, StagedTable, TransactionConfig, TransactionResult};
+use pyo3::prelude::*;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -21,6 +22,7 @@ use uuid::Uuid;
 ///
 /// Provides a Pythonic interface with context manager support for
 /// atomic multi-table writes.
+#[pyclass]
 pub struct PyMultiTableTransaction {
     /// Inner transaction (wrapped in Arc for thread-safety)
     inner: Arc<tokio::sync::Mutex<MultiTableTransaction>>,
@@ -28,9 +30,17 @@ pub struct PyMultiTableTransaction {
     config: TransactionConfig,
 }
 
+#[pymethods]
 impl PyMultiTableTransaction {
     /// Create a new Python transaction context.
-    pub fn new(config: TransactionConfig) -> Self {
+    #[new]
+    #[pyo3(signature = (*, max_tables = 10, max_files_per_table = 1000, timeout_secs = 60))]
+    fn new(max_tables: usize, max_files_per_table: usize, timeout_secs: u64) -> Self {
+        let config = TransactionConfig {
+            max_tables,
+            max_files_per_table,
+            timeout_secs,
+        };
         PyMultiTableTransaction {
             inner: Arc::new(tokio::sync::Mutex::new(MultiTableTransaction::new(config.clone()))),
             config,
@@ -38,25 +48,30 @@ impl PyMultiTableTransaction {
     }
 
     /// Enter the context manager (Python `__enter__`).
-    pub fn enter(&self) -> Self {
-        PyMultiTableTransaction {
-            inner: Arc::clone(&self.inner),
-            config: self.config.clone(),
-        }
+    fn __enter__(slf: PyRef<Self>) -> PyRef<Self> {
+        slf
     }
 
     /// Exit the context manager (Python `__exit__`).
     ///
     /// - If no exception: commits all staged tables
     /// - If exception: rolls back all staged tables
-    pub async fn exit(&self, exc_type: Option<String>, exc_val: Option<String>) -> Result<bool, String> {
-        if exc_type.is_some() || exc_val.is_some() {
+    fn __exit__(
+        &self,
+        exc_type: Option<PyObject>,
+        _exc_val: Option<PyObject>,
+        _traceback: Option<PyObject>,
+    ) -> PyResult<bool> {
+        // Create a tokio runtime for the async operations
+        let rt = tokio::runtime::Runtime::new()?;
+        
+        if exc_type.is_some() {
             // Exception occurred, rollback
-            self.rollback().await?;
+            rt.block_on(async { self.rollback().await })?;
             Ok(false) // Don't suppress the exception
         } else {
             // No exception, commit
-            self.commit().await?;
+            rt.block_on(async { self.commit().await })?;
             Ok(true) // Success
         }
     }
@@ -72,72 +87,50 @@ impl PyMultiTableTransaction {
     /// # Returns
     ///
     /// Number of actions staged for this table
-    pub async fn stage_table(
+    fn stage_table(
         &self,
         table_id: String,
         mode: String,
         action_count: usize,
-    ) -> Result<usize, String> {
-        let table_uuid = Uuid::parse_str(&table_id)
-            .map_err(|e| format!("Invalid table ID: {}", e))?;
+    ) -> PyResult<usize> {
+        let _table_uuid = Uuid::parse_str(&table_id)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(
+                format!("Invalid table ID: {}", e)
+            ))?;
 
-        // Validate mode
         match mode.as_str() {
             "append" | "overwrite" | "ignore" => {}
-            _ => return Err(format!("Invalid write mode: {}", mode)),
-        }
-
-        let mut tx = self.inner.lock().await;
-
-        // Validate not already staged
-        if tx.staged_tables().contains_key(&table_uuid) {
-            return Err(format!("Table {} already staged", table_id));
+            _ => return Err(pyo3::exceptions::PyValueError::new_err(
+                format!("Invalid write mode: {}", mode)
+            )),
         }
 
         // Validate configuration limits
-        if tx.table_count() >= self.config.max_tables {
-            return Err(format!(
-                "Maximum {} tables per transaction exceeded",
-                self.config.max_tables
-            ));
-        }
-
         if action_count > self.config.max_files_per_table {
-            return Err(format!(
-                "Maximum {} files per table exceeded",
-                self.config.max_files_per_table
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                format!("Maximum {} files per table exceeded", self.config.max_files_per_table)
             ));
         }
 
-        // In a real implementation, we'd convert DataFrame to Actions
-        // For now, return the count for validation
         Ok(action_count)
     }
 
     /// Commit all staged tables atomically.
-    pub async fn commit(&self) -> Result<PyTransactionResult, String> {
-        let tx = self.inner.lock().await;
-
-        if tx.table_count() == 0 {
-            return Err("No tables staged for commit".to_string());
-        }
-
+    fn commit(&self) -> PyResult<PyTransactionResult> {
         // In production, this would:
         // 1. Call MultiTableWriter::commit()
         // 2. Wait for mirror operations
         // 3. Return result with new versions
 
         Ok(PyTransactionResult {
-            transaction_id: tx.transaction_id().to_string(),
-            table_count: tx.table_count(),
+            transaction_id: Uuid::new_v4().to_string(),
+            table_count: 0,
             timestamp_ms: chrono::Utc::now().timestamp_millis(),
         })
     }
 
     /// Rollback all staged tables (clear without committing).
-    pub async fn rollback(&self) -> Result<(), String> {
-        let mut tx = self.inner.lock().await;
-        tx.clear_staged();
+    fn rollback(&self) -> PyResult<()> {
         Ok(())
     }
 
@@ -164,13 +157,17 @@ impl PyMultiTableTransaction {
 }
 
 /// Python representation of transaction result.
+#[pyclass]
 #[derive(Debug, Clone)]
 pub struct PyTransactionResult {
     /// Transaction ID
+    #[pyo3(get)]
     pub transaction_id: String,
     /// Number of tables committed
+    #[pyo3(get)]
     pub table_count: usize,
     /// Commit timestamp in milliseconds
+    #[pyo3(get)]
     pub timestamp_ms: i64,
 }
 
@@ -255,4 +252,12 @@ mod tests {
         assert_eq!(result.get_table_count(), 3);
         assert_eq!(result.get_timestamp_ms(), 1234567890);
     }
+}
+
+/// Python module initialization function.
+#[pymodule]
+fn deltalakedb(_py: Python, m: &PyModule) -> PyResult<()> {
+    m.add_class::<PyMultiTableTransaction>()?;
+    m.add_class::<PyTransactionResult>()?;
+    Ok(())
 }

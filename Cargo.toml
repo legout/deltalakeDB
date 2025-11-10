@@ -37,6 +37,9 @@ criterion = { version = "0.5", features = ["async_tokio"] }
 deltalake = { version = "0.17", default-features = false, features = ["datafusion", "s3"] }
 tempfile = "3"
 
+# Python bindings
+pyo3 = { version = "0.20", features = ["auto-initialize"] }
+
 # Placeholder for future dependencies
 # sqlx = { version = "...", default-features = false, features = ["runtime-tokio-rustls", "postgres", "sqlite"] }
 # duckdb = { version = "..." }
