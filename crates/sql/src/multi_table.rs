@@ -10,11 +10,11 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use deltalakedb_core::{
     error::{TxnLogError, TxnLogResult},
-    DeltaAction, AddFile, RemoveFile, Metadata, Protocol,
+    DeltaAction, AddFile, RemoveFile, Metadata, Protocol, TxnLogWriter,
 };
 use std::collections::{HashMap, BTreeMap};
 use std::sync::Arc;
-use tracing::{debug, instrument, warn, error};
+use tracing::{debug, info, instrument, warn, error};
 use uuid::Uuid;
 
 /// Transaction isolation levels for multi-table transactions.
@@ -34,11 +34,456 @@ impl Default for TransactionIsolationLevel {
     }
 }
 
+/// Consistency violation types for multi-table transactions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConsistencyViolation {
+    /// Table referenced in transaction does not exist
+    TableNotFound {
+        table_id: String,
+    },
+    /// Version mismatch between expected and actual table version
+    VersionMismatch {
+        table_id: String,
+        expected: i64,
+        actual: i64,
+    },
+    /// No actions specified for a table
+    EmptyActionList {
+        table_id: String,
+    },
+    /// Duplicate file path in add/remove actions
+    DuplicateFile {
+        table_id: String,
+        path: String,
+    },
+    /// Too many tables in a single transaction
+    TooManyTables {
+        count: usize,
+        max: usize,
+    },
+    /// Transaction exceeds maximum allowed size
+    TransactionTooLarge {
+        action_count: usize,
+        max_actions: usize,
+    },
+    /// Table transaction exceeds maximum allowed size
+    TableTransactionTooLarge {
+        table_id: String,
+        action_count: usize,
+        max_actions: usize,
+    },
+    /// Transaction is too old (timestamp based validation)
+    TransactionTooOld {
+        created_at: DateTime<Utc>,
+        max_age_seconds: i64,
+    },
+}
+
+impl std::fmt::Display for ConsistencyViolation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ConsistencyViolation::TableNotFound { table_id } => {
+                write!(f, "Table '{}' not found", table_id)
+            }
+            ConsistencyViolation::VersionMismatch { table_id, expected, actual } => {
+                write!(f, "Version mismatch for table '{}': expected {}, actual {}", table_id, expected, actual)
+            }
+            ConsistencyViolation::EmptyActionList { table_id } => {
+                write!(f, "Empty action list for table '{}'", table_id)
+            }
+            ConsistencyViolation::DuplicateFile { table_id, path } => {
+                write!(f, "Duplicate file '{}' in table '{}'", path, table_id)
+            }
+            ConsistencyViolation::TooManyTables { count, max } => {
+                write!(f, "Too many tables in transaction: {} (max: {})", count, max)
+            }
+            ConsistencyViolation::TransactionTooLarge { action_count, max_actions } => {
+                write!(f, "Transaction too large: {} actions (max: {})", action_count, max_actions)
+            }
+            ConsistencyViolation::TableTransactionTooLarge { table_id, action_count, max_actions } => {
+                write!(f, "Table '{}' transaction too large: {} actions (max: {})", table_id, action_count, max_actions)
+            }
+            ConsistencyViolation::TransactionTooOld { created_at, max_age_seconds } => {
+                write!(f, "Transaction too old: created at {}, max age: {} seconds", created_at, max_age_seconds)
+            }
+        }
+    }
+}
+
+/// Configuration for multi-table transactions.
+#[derive(Debug, Clone)]
+pub struct MultiTableConfig {
+    /// Enable consistency validation across tables
+    pub enable_consistency_validation: bool,
+    /// Enable ordered mirroring to storage systems
+    pub enable_ordered_mirroring: bool,
+    /// Default isolation level for transactions
+    pub default_isolation_level: TransactionIsolationLevel,
+    /// Maximum number of tables per transaction
+    pub max_tables_per_transaction: usize,
+    /// Maximum number of actions per transaction
+    pub max_actions_per_transaction: usize,
+    /// Maximum number of actions per table transaction
+    pub max_actions_per_table: usize,
+    /// Maximum transaction age in seconds
+    pub max_transaction_age_seconds: i64,
+    /// Maximum retry attempts for failed operations
+    pub max_retry_attempts: u32,
+    /// Base delay for retry backoff in milliseconds
+    pub retry_base_delay_ms: u64,
+    /// Maximum delay for retry backoff in milliseconds
+    pub retry_max_delay_ms: u64,
+}
+
+impl Default for MultiTableConfig {
+    fn default() -> Self {
+        Self {
+            enable_consistency_validation: true,
+            enable_ordered_mirroring: false,
+            default_isolation_level: TransactionIsolationLevel::ReadCommitted,
+            max_tables_per_transaction: 100,
+            max_actions_per_transaction: 10000,
+            max_actions_per_table: 1000,
+            max_transaction_age_seconds: 3600, // 1 hour
+            max_retry_attempts: 3,
+            retry_base_delay_ms: 100,
+            retry_max_delay_ms: 5000,
+        }
+    }
+}
+
+/// Transaction state for multi-table transactions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransactionState {
+    /// Transaction is active and can accept new actions
+    Active,
+    /// Transaction is being committed
+    Committing,
+    /// Transaction has been committed
+    Committed,
+    /// Transaction has been aborted
+    Aborted,
+}
+
+/// Actions for a specific table in a multi-table transaction.
+#[derive(Debug, Clone)]
+pub struct TableActions {
+    /// Table identifier
+    pub table_id: String,
+    /// Expected version of the table
+    pub expected_version: i64,
+    /// Actions to be performed
+    pub actions: Vec<DeltaAction>,
+    /// Optional operation type
+    pub operation: Option<String>,
+    /// Optional operation parameters
+    pub operation_params: Option<HashMap<String, String>>,
+}
+
+impl TableActions {
+    /// Create new table actions.
+    pub fn new(table_id: String, expected_version: i64) -> Self {
+        Self {
+            table_id,
+            expected_version,
+            actions: Vec::new(),
+            operation: None,
+            operation_params: None,
+        }
+    }
+
+    /// Add actions to the table.
+    pub fn add_actions(&mut self, actions: Vec<DeltaAction>) {
+        self.actions.extend(actions);
+    }
+
+    /// Add a single action.
+    pub fn add_action(&mut self, action: DeltaAction) {
+        self.actions.push(action);
+    }
+
+    /// Set the operation type.
+    pub fn with_operation(mut self, operation: String) -> Self {
+        self.operation = Some(operation);
+        self
+    }
+
+    /// Set operation parameters.
+    pub fn with_operation_params(mut self, params: HashMap<String, String>) -> Self {
+        self.operation_params = Some(params);
+        self
+    }
+
+    /// Validate the table actions.
+    pub fn validate(&self) -> TxnLogResult<()> {
+        if self.actions.is_empty() {
+            return Err(TxnLogError::validation(format!(
+                "Empty action list for table '{}'",
+                self.table_id
+            )));
+        }
+        Ok(())
+    }
+}
+
+/// Multi-table transaction spanning multiple Delta tables.
+#[derive(Debug, Clone)]
+pub struct MultiTableTransaction {
+    /// Unique transaction identifier
+    pub transaction_id: String,
+    /// Tables involved in the transaction
+    pub staged_tables: HashMap<String, TableActions>,
+    /// Transaction state
+    pub state: TransactionState,
+    /// Isolation level
+    pub isolation_level: TransactionIsolationLevel,
+    /// Transaction priority (higher = more important)
+    pub priority: i32,
+    /// When the transaction was created
+    pub started_at: DateTime<Utc>,
+    /// When the transaction was last updated
+    pub updated_at: DateTime<Utc>,
+}
+
+impl MultiTableTransaction {
+    /// Create a new multi-table transaction.
+    pub fn new(config: MultiTableConfig) -> Self {
+        let now = Utc::now();
+        Self {
+            transaction_id: Uuid::new_v4().to_string(),
+            staged_tables: HashMap::new(),
+            state: TransactionState::Active,
+            isolation_level: config.default_isolation_level,
+            priority: 0,
+            started_at: now,
+            updated_at: now,
+        }
+    }
+
+    /// Stage actions for a table.
+    pub fn stage_actions(&mut self, table_actions: TableActions) -> TxnLogResult<()> {
+        table_actions.validate()?;
+        self.staged_tables.insert(table_actions.table_id.clone(), table_actions);
+        self.updated_at = Utc::now();
+        Ok(())
+    }
+
+    /// Get the number of tables in the transaction.
+    pub fn table_count(&self) -> usize {
+        self.staged_tables.len()
+    }
+
+    /// Get the total number of actions across all tables.
+    pub fn total_action_count(&self) -> usize {
+        self.staged_tables.values().map(|t| t.actions.len()).sum()
+    }
+
+    /// Check if the transaction is timed out.
+    pub fn is_timed_out(&self) -> bool {
+        let now = Utc::now();
+        let duration = now.signed_duration_since(self.started_at);
+        duration.num_seconds() > 3600 // Default 1 hour timeout
+    }
+
+    /// Mark the transaction as committing.
+    pub fn mark_committing(&mut self) -> TxnLogResult<()> {
+        if self.state != TransactionState::Active {
+            return Err(TxnLogError::validation(
+                "Transaction is not active and cannot be committed".to_string(),
+            ));
+        }
+        self.state = TransactionState::Committing;
+        self.updated_at = Utc::now();
+        Ok(())
+    }
+
+    /// Mark the transaction as committed.
+    pub fn mark_committed(&mut self) {
+        self.state = TransactionState::Committed;
+        self.updated_at = Utc::now();
+    }
+
+    /// Validate the transaction.
+    pub fn validate(&self) -> TxnLogResult<()> {
+        if self.staged_tables.is_empty() {
+            return Err(TxnLogError::validation(
+                "Transaction has no staged tables".to_string(),
+            ));
+        }
+
+        if self.total_action_count() == 0 {
+            return Err(TxnLogError::validation(
+                "Transaction has no actions".to_string(),
+            ));
+        }
+
+        Ok(())
+    }
+
+    /// Add files to a table.
+    pub fn add_files(&mut self, table_id: String, expected_version: i64, files: Vec<AddFile>) -> TxnLogResult<()> {
+        let mut table_actions = TableActions::new(table_id.clone(), expected_version);
+        for file in files {
+            table_actions.add_action(DeltaAction::Add(file));
+        }
+        self.stage_actions(table_actions)
+    }
+
+    /// Remove files from a table.
+    pub fn remove_files(&mut self, table_id: String, expected_version: i64, files: Vec<RemoveFile>) -> TxnLogResult<()> {
+        let mut table_actions = TableActions::new(table_id.clone(), expected_version);
+        for file in files {
+            table_actions.add_action(DeltaAction::Remove(file));
+        }
+        self.stage_actions(table_actions)
+    }
+
+    /// Mixed operation (add and remove files).
+    pub fn mixed_operation(&mut self, table_id: String, expected_version: i64, add_files: Vec<AddFile>, remove_files: Vec<RemoveFile>) -> TxnLogResult<()> {
+        let mut table_actions = TableActions::new(table_id.clone(), expected_version);
+        for file in add_files {
+            table_actions.add_action(DeltaAction::Add(file));
+        }
+        for file in remove_files {
+            table_actions.add_action(DeltaAction::Remove(file));
+        }
+        self.stage_actions(table_actions)
+    }
+
+    /// Get a summary of the transaction.
+    pub fn summary(&self) -> TransactionSummary {
+        TransactionSummary {
+            transaction_id: self.transaction_id.clone(),
+            table_count: self.table_count(),
+            total_action_count: self.total_action_count(),
+            state: self.state,
+            isolation_level: self.isolation_level,
+            started_at: self.started_at,
+            updated_at: self.updated_at,
+        }
+    }
+}
+
+/// Summary of a multi-table transaction.
+#[derive(Debug, Clone)]
+pub struct TransactionSummary {
+    /// Transaction identifier
+    pub transaction_id: String,
+    /// Number of tables in the transaction
+    pub table_count: usize,
+    /// Total number of actions
+    pub total_action_count: usize,
+    /// Transaction state
+    pub state: TransactionState,
+    /// Isolation level
+    pub isolation_level: TransactionIsolationLevel,
+    /// When the transaction was started
+    pub started_at: DateTime<Utc>,
+    /// When the transaction was last updated
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Result of committing a table in a multi-table transaction.
+#[derive(Debug, Clone)]
+pub struct TableCommitResult {
+    /// Table identifier
+    pub table_id: String,
+    /// Committed version
+    pub version: i64,
+    /// Whether the commit was successful
+    pub success: bool,
+    /// Error message if commit failed
+    pub error: Option<String>,
+    /// Number of actions committed
+    pub action_count: usize,
+}
+
+/// Result of mirroring operations.
+#[derive(Debug, Clone)]
+pub struct MirroringResult {
+    /// Table identifier
+    pub table_id: String,
+    /// Version that was mirrored
+    pub version: i64,
+    /// Whether mirroring was successful
+    pub success: bool,
+    /// Error message if mirroring failed
+    pub error: Option<String>,
+    /// Duration of mirroring operation in milliseconds
+    pub duration_ms: u64,
+}
+
+/// Result of a multi-table transaction commit.
+#[derive(Debug, Clone)]
+pub struct MultiTableCommitResult {
+    /// Transaction summary
+    pub transaction: TransactionSummary,
+    /// Results for each table
+    pub table_results: Vec<TableCommitResult>,
+    /// Optional mirroring results
+    pub mirroring_results: Option<Vec<MirroringResult>>,
+}
+
+/// Schedule for retrying failed operations.
+#[derive(Debug, Clone)]
+pub struct RetrySchedule {
+    /// Table identifier
+    pub table_id: String,
+    /// Version to retry
+    pub version: i64,
+    /// When to retry
+    pub retry_at: DateTime<Utc>,
+    /// Retry attempt number
+    pub attempt: u32,
+}
+
+/// Information about mirroring status for a table.
+#[derive(Debug, Clone)]
+pub struct MirrorStatusInfo {
+    /// Table identifier
+    pub table_id: String,
+    /// Current version
+    pub version: i64,
+    /// Mirroring status
+    pub status: String,
+    /// Artifact type
+    pub artifact_type: String,
+    /// Error message if failed
+    pub error_message: Option<String>,
+    /// Number of retry attempts
+    pub attempts: u32,
+    /// When the record was created
+    pub created_at: DateTime<Utc>,
+    /// Last mirroring attempt
+    pub last_attempt_at: Option<DateTime<Utc>>,
+    /// When mirroring was completed
+    pub completed_at: Option<DateTime<Utc>>,
+    /// Last successful mirroring
+    pub last_success: Option<DateTime<Utc>>,
+    /// Error message if failed (alias for error_message)
+    pub error: Option<String>,
+    /// Number of retry attempts (alias for attempts)
+    pub retry_count: u32,
+}
+
+/// Writer for multi-table transactions.
+#[derive(Debug, Clone)]
+pub struct MultiTableWriter {
+    /// Database connection
+    pub connection: Arc<DatabaseConnection>,
+    /// Mirror engine for ordered mirroring
+    pub mirror_engine: Option<Arc<dyn MirrorEngine>>,
+    /// Configuration
+    pub config: MultiTableConfig,
+    /// Single table writer for individual operations
+    pub single_writer: SqlTxnLogWriter,
+}
+
 impl MultiTableWriter {
     /// Create a new multi-table writer.
     pub fn new(
         connection: Arc<DatabaseConnection>,
-        mirror_engine: Option<Arc<MirrorEngine>>,
+        mirror_engine: Option<Arc<dyn MirrorEngine>>,
         config: MultiTableConfig,
     ) -> Self {
         let writer_config = SqlWriterConfig {
@@ -120,7 +565,7 @@ impl MultiTableWriter {
         operation: Option<String>,
     ) -> TxnLogResult<()> {
         let current_version = self.get_table_version(&table_id).await?;
-        tx.mixed_operation(table_id, current_version, add_files, remove_files)?;
+        tx.mixed_operation(table_id.clone(), current_version, add_files, remove_files)?;
         
         // Set operation on the staged actions
         if let Some(op) = operation {
@@ -136,7 +581,7 @@ impl MultiTableWriter {
     pub async fn validate_tables_exist(&self, tx: &MultiTableTransaction) -> TxnLogResult<()> {
         for table_id in tx.staged_tables.keys() {
             if !self.single_writer.table_exists(table_id).await? {
-                return Err(TxnLogError::TableNotFound(table_id.clone()));
+                return Err(TxnLogError::table_not_found(table_id.clone()));
             }
         }
         Ok(())
@@ -298,7 +743,7 @@ impl MultiTableWriter {
             match action {
                 DeltaAction::Add(add_file) => {
                     if add_paths.contains(&add_file.path) {
-                        return Err(TxnLogError::TransactionError(
+                        return Err(TxnLogError::validation(
                             format!("Duplicate add file path in table {}: {}", table_id, add_file.path)
                         ));
                     }
@@ -306,1094 +751,17 @@ impl MultiTableWriter {
                 }
                 DeltaAction::Remove(remove_file) => {
                     if remove_paths.contains(&remove_file.path) {
-                        return Err(TxnLogError::TransactionError(
+                        return Err(TxnLogError::validation(
                             format!("Duplicate remove file path in table {}: {}", table_id, remove_file.path)
                         ));
                     }
                     remove_paths.insert(&remove_file.path);
                 }
-                _ => {}
             }
         }
-
-        // Check for files being both added and removed in same transaction
-        let both_paths: HashSet<_> = add_paths.intersection(&remove_paths).collect();
-        if !both_paths.is_empty() {
-            return Err(TxnLogError::TransactionError(
-                format!("Files cannot be both added and removed in same transaction for table {}: {:?}",
-                    table_id, both_paths)
-            ));
-        }
-
+        
         Ok(())
     }
-
-    /// Execute atomic commit with retry logic.
-    async fn execute_atomic_commit_with_retry(
-        &self,
-        transaction: &MultiTableTransaction,
-    ) -> TxnLogResult<Vec<TableCommitResult>> {
-        let mut attempt = 0;
-        let mut delay = self.config.retry_base_delay_ms;
-
-        loop {
-            attempt += 1;
-            match self.commit_atomic_sql(transaction).await {
-                Ok(results) => return Ok(results),
-                Err(TxnLogError::ConcurrentWrite(_)) if attempt <= self.config.max_retry_attempts => {
-                    debug!(
-                        "Concurrent write detected for transaction {}, retrying attempt {}/{}",
-                        transaction.transaction_id, attempt, self.config.max_retry_attempts
-                    );
-                    tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
-                    delay = std::cmp::min(delay * 2, self.config.retry_max_delay_ms);
-                }
-                Err(e) => {
-                    error!(
-                        "Commit failed for transaction {} after {} attempts: {}",
-                        transaction.transaction_id, attempt, e
-                    );
-                    return Err(e);
-                }
-            }
-        }
-    }
-
-    /// Rollback a multi-table transaction.
-    #[instrument(skip(self, transaction))]
-    pub async fn rollback_transaction(&self, mut transaction: MultiTableTransaction) -> TxnLogResult<()> {
-        debug!("Rolling back multi-table transaction {}", transaction.transaction_id);
-        
-        // Validate transaction can be rolled back
-        if transaction.state != TransactionState::Active && transaction.state != TransactionState::Committing {
-            return Err(TxnLogError::TransactionError(
-                format!("Cannot rollback transaction in state: {:?}", transaction.state)
-            ));
-        }
-
-        // Record rollback attempt in metadata
-        self.record_rollback_attempt(&transaction).await?;
-
-        // For SQL transactions, we don't need to do anything explicit
-        // since we haven't committed yet. Just mark as rolled back.
-        transaction.mark_rolled_back();
-        
-        // Update transaction metadata to rolled back
-        self.update_transaction_metadata_to_olled_back(&transaction).await?;
-        
-        debug!("Successfully rolled back transaction {}", transaction.transaction_id);
-        Ok(())
-    }
-
-    /// Record rollback attempt in transaction metadata.
-    async fn record_rollback_attempt(&self, transaction: &MultiTableTransaction) -> TxnLogResult<()> {
-        match &*self.connection {
-            DatabaseConnection::Postgres(pool) => {
-                sqlx::query(
-                    "INSERT INTO dl_multi_table_transactions (transaction_id, started_at, table_count, total_action_count, state) 
-                     VALUES ($1, $2, $3, $4, $5)
-                     ON CONFLICT (transaction_id) DO NOTHING"
-                )
-                .bind(&transaction.transaction_id)
-                .bind(transaction.started_at)
-                .bind(transaction.table_count() as i32)
-                .bind(transaction.total_action_count() as i32)
-                .bind("ROLLING_BACK")
-                .execute(pool)
-                .await
-                .map_err(|e| TxnLogError::DatabaseError(e.to_string()))?;
-            }
-            DatabaseConnection::Sqlite(pool) => {
-                sqlx::query(
-                    "INSERT OR IGNORE INTO dl_multi_table_transactions (transaction_id, started_at, table_count, total_action_count, state) 
-                     VALUES (?1, ?2, ?3, ?4, ?5)"
-                )
-                .bind(&transaction.transaction_id)
-                .bind(transaction.started_at)
-                .bind(transaction.table_count() as i32)
-                .bind(transaction.total_action_count() as i32)
-                .bind("ROLLING_BACK")
-                .execute(pool)
-                .await
-                .map_err(|e| TxnLogError::DatabaseError(e.to_string()))?;
-            }
-            DatabaseConnection::DuckDb(_conn) => {
-                // Placeholder for DuckDB
-                return Ok(());
-            }
-        }
-        Ok(())
-    }
-
-    /// Update transaction metadata to rolled back state for Postgres.
-    async fn update_transaction_metadata_to_olled_back(&self, transaction: &MultiTableTransaction) -> TxnLogResult<()> {
-        match &*self.connection {
-            DatabaseConnection::Postgres(pool) => {
-                sqlx::query(
-                    "UPDATE dl_multi_table_transactions SET state = $1, completed_at = $2 WHERE transaction_id = $3"
-                )
-                .bind("ROLLED_BACK")
-                .bind(Utc::now())
-                .bind(&transaction.transaction_id)
-                .execute(pool)
-                .await
-                .map_err(|e| TxnLogError::DatabaseError(e.to_string()))?;
-            }
-            DatabaseConnection::Sqlite(pool) => {
-                sqlx::query(
-                    "UPDATE dl_multi_table_transactions SET state = ?1, completed_at = ?2 WHERE transaction_id = ?3"
-                )
-                .bind("ROLLED_BACK")
-                .bind(Utc::now())
-                .bind(&transaction.transaction_id)
-                .execute(pool)
-                .await
-                .map_err(|e| TxnLogError::DatabaseError(e.to_string()))?;
-            }
-            DatabaseConnection::DuckDb(_conn) => {
-                // Placeholder for DuckDB
-                return Ok(());
-            }
-        }
-        Ok(())
-    }
-
-    /// Force rollback a transaction by transaction ID (for recovery scenarios).
-    #[instrument(skip(self))]
-    pub async fn force_rollback_transaction(&self, transaction_id: &str) -> TxnLogResult<bool> {
-        debug!("Force rolling back transaction {}", transaction_id);
-        
-        match &*self.connection {
-            DatabaseConnection::Postgres(pool) => {
-                let result = sqlx::query(
-                    "UPDATE dl_multi_table_transactions SET state = $1, completed_at = $2 
-                     WHERE transaction_id = $3 AND state IN ($4, $5)"
-                )
-                .bind("FORCE_ROLLED_BACK")
-                .bind(Utc::now())
-                .bind(transaction_id)
-                .bind("ACTIVE")
-                .bind("COMMITTING")
-                .execute(pool)
-                .await
-                .map_err(|e| TxnLogError::DatabaseError(e.to_string()))?;
-                
-                Ok(result.rows_affected() > 0)
-            }
-            DatabaseConnection::Sqlite(pool) => {
-                let result = sqlx::query(
-                    "UPDATE dl_multi_table_transactions SET state = ?1, completed_at = ?2 
-                     WHERE transaction_id = ?3 AND state IN (?4, ?5)"
-                )
-                .bind("FORCE_ROLLED_BACK")
-                .bind(Utc::now())
-                .bind(transaction_id)
-                .bind("ACTIVE")
-                .bind("COMMITTING")
-                .execute(pool)
-                .await
-                .map_err(|e| TxnLogError::DatabaseError(e.to_string()))?;
-                
-                Ok(result.rows_affected() > 0)
-            }
-            DatabaseConnection::DuckDb(_conn) => {
-                Ok(false) // Placeholder
-            }
-        }
-    }
-
-    /// Get transaction status by ID.
-    #[instrument(skip(self))]
-    pub async fn get_transaction_status(&self, transaction_id: &str) -> TxnLogResult<Option<TransactionState>> {
-        match &*self.connection {
-            DatabaseConnection::Postgres(pool) => {
-                let row = sqlx::query(
-                    "SELECT state FROM dl_multi_table_transactions WHERE transaction_id = $1"
-                )
-                .bind(transaction_id)
-                .fetch_optional(pool)
-                .await
-                .map_err(|e| TxnLogError::DatabaseError(e.to_string()))?;
-                
-                Ok(row.map(|r| {
-                    let state: String = r.get("state");
-                    match state.as_str() {
-                        "ACTIVE" => TransactionState::Active,
-                        "COMMITTING" => TransactionState::Committing,
-                        "COMMITTED" => TransactionState::Committed,
-                        "ROLLED_BACK" | "FORCE_ROLLED_BACK" => TransactionState::RolledBack,
-                        "FAILED" => TransactionState::Failed("Unknown".to_string()),
-                        _ => TransactionState::Failed(format!("Unknown state: {}", state)),
-                    }
-                }))
-            }
-            DatabaseConnection::Sqlite(pool) => {
-                let row = sqlx::query(
-                    "SELECT state FROM dl_multi_table_transactions WHERE transaction_id = ?1"
-                )
-                .bind(transaction_id)
-                .fetch_optional(pool)
-                .await
-                .map_err(|e| TxnLogError::DatabaseError(e.to_string()))?;
-                
-                Ok(row.map(|r| {
-                    let state: String = r.get("state");
-                    match state.as_str() {
-                        "ACTIVE" => TransactionState::Active,
-                        "COMMITTING" => TransactionState::Committing,
-                        "COMMITTED" => TransactionState::Committed,
-                        "ROLLED_BACK" | "FORCE_ROLLED_BACK" => TransactionState::RolledBack,
-                        "FAILED" => TransactionState::Failed("Unknown".to_string()),
-                        _ => TransactionState::Failed(format!("Unknown state: {}", state)),
-                    }
-                }))
-            }
-            DatabaseConnection::DuckDb(_conn) => {
-                Ok(None) // Placeholder
-            }
-        }
-    }
-
-    /// Validate cross-table consistency before commit.
-    /// 
-    /// This method performs various consistency checks to ensure that the multi-table
-    /// transaction maintains data integrity across all tables.
-    #[instrument(skip(self, transaction))]
-    pub async fn validate_cross_table_consistency(&self, transaction: &MultiTableTransaction) -> TxnLogResult<Vec<ConsistencyViolation>> {
-        debug!("Validating cross-table consistency for transaction {}", transaction.transaction_id);
-        
-        let mut violations = Vec::new();
-        
-        // Check 1: Validate that all referenced tables exist
-        violations.extend(self.validate_table_existence(transaction).await?);
-        
-        // Check 2: Validate version consistency
-        violations.extend(self.validate_version_consistency(transaction).await?);
-        
-        // Check 3: Validate action consistency
-        violations.extend(self.validate_action_consistency(transaction).await?);
-        
-        // Check 4: Validate cross-table constraints (if any)
-        violations.extend(self.validate_cross_table_constraints(transaction).await?);
-        
-        // Check 5: Validate transaction size limits
-        violations.extend(self.validate_transaction_limits(transaction).await?);
-        
-        if !violations.is_empty() {
-            warn!("Found {} consistency violations in transaction {}", violations.len(), transaction.transaction_id);
-            for violation in &violations {
-                warn!("  - {}", violation);
-            }
-        } else {
-            debug!("Cross-table consistency validation passed for transaction {}", transaction.transaction_id);
-        }
-        
-        Ok(violations)
-    }
-    
-    /// Validate that all referenced tables exist in the database.
-    async fn validate_table_existence(&self, transaction: &MultiTableTransaction) -> TxnLogResult<Vec<ConsistencyViolation>> {
-        let mut violations = Vec::new();
-        
-        for table_id in transaction.table_actions.keys() {
-            let exists = self.table_exists(table_id).await?;
-            if !exists {
-                violations.push(ConsistencyViolation::TableNotFound {
-                    table_id: table_id.clone(),
-                });
-            }
-        }
-        
-        Ok(violations)
-    }
-    
-    /// Validate version consistency across all tables.
-    async fn validate_version_consistency(&self, transaction: &MultiTableTransaction) -> TxnLogResult<Vec<ConsistencyViolation>> {
-        let mut violations = Vec::new();
-        
-        for (table_id, actions) in &transaction.table_actions {
-            // Check if expected version matches actual current version
-            if let Some(current_version) = self.get_current_version(table_id).await? {
-                if actions.expected_version != current_version {
-                    violations.push(ConsistencyViolation::VersionMismatch {
-                        table_id: table_id.clone(),
-                        expected: actions.expected_version,
-                        actual: current_version,
-                    });
-                }
-            } else {
-                // Table doesn't exist yet, version should be -1
-                if actions.expected_version != -1 {
-                    violations.push(ConsistencyViolation::VersionMismatch {
-                        table_id: table_id.clone(),
-                        expected: actions.expected_version,
-                        actual: -1,
-                    });
-                }
-            }
-        }
-        
-        Ok(violations)
-    }
-    
-    /// Validate action consistency within each table.
-    async fn validate_action_consistency(&self, transaction: &MultiTableTransaction) -> TxnLogResult<Vec<ConsistencyViolation>> {
-        let mut violations = Vec::new();
-        
-        for (table_id, actions) in &transaction.table_actions {
-            // Check for empty action lists
-            if actions.actions.is_empty() {
-                violations.push(ConsistencyViolation::EmptyActionList {
-                    table_id: table_id.clone(),
-                });
-                continue;
-            }
-            
-            // Check for duplicate file paths within add actions
-            let mut add_paths = std::collections::HashSet::new();
-            for action in &actions.actions {
-                if let DeltaAction::Add(add) = action {
-                    if add_paths.contains(&add.path) {
-                        violations.push(ConsistencyViolation::DuplicateFile {
-                            table_id: table_id.clone(),
-                            path: add.path.clone(),
-                        });
-                    } else {
-                        add_paths.insert(&add.path);
-                    }
-                }
-            }
-            
-            // Check for remove actions without corresponding add actions (unless it's a delete)
-            let mut remove_paths = std::collections::HashSet::new();
-            for action in &actions.actions {
-                if let DeltaAction::Remove(remove) = action {
-                    remove_paths.insert(&remove.path);
-                }
-            }
-            
-            // Only flag as violation if we're removing files that weren't added in this transaction
-            // and the table exists (removing from existing table)
-            if self.get_current_version(table_id).await?.is_some() {
-                for remove_path in &remove_paths {
-                    if !add_paths.contains(remove_path) {
-                        // This could be a legitimate delete, so we'll just warn about it
-                        // rather than treating it as a violation
-                        debug!("Removing existing file {} from table {}", remove_path, table_id);
-                    }
-                }
-            }
-        }
-        
-        Ok(violations)
-    }
-    
-    /// Validate cross-table constraints.
-    /// 
-    /// This is a placeholder for future cross-table constraint validation.
-    /// Currently checks for obvious issues like circular dependencies.
-    async fn validate_cross_table_constraints(&self, transaction: &MultiTableTransaction) -> TxnLogResult<Vec<ConsistencyViolation>> {
-        let mut violations = Vec::new();
-        
-        // Check for potential circular dependencies in table ordering
-        // This is a simple check - more sophisticated constraint checking could be added
-        
-        // For now, we'll just ensure that we're not trying to create tables that reference
-        // each other in ways that could cause issues
-        let table_count = transaction.table_actions.len();
-        if table_count > 100 {
-            violations.push(ConsistencyViolation::TooManyTables {
-                table_count,
-                limit: 100,
-            });
-        }
-        
-        Ok(violations)
-    }
-    
-    /// Validate transaction size limits.
-    async fn validate_transaction_limits(&self, transaction: &MultiTableTransaction) -> TxnLogResult<Vec<ConsistencyViolation>> {
-        let mut violations = Vec::new();
-        
-        let total_actions = transaction.total_action_count();
-        let table_count = transaction.table_count();
-        
-        // Check total action limit
-        if total_actions > 10000 {
-            violations.push(ConsistencyViolation::TransactionTooLarge {
-                action_count: total_actions,
-                limit: 10000,
-            });
-        }
-        
-        // Check per-table action limit
-        for (table_id, actions) in &transaction.table_actions {
-            if actions.actions.len() > 5000 {
-                violations.push(ConsistencyViolation::TableTransactionTooLarge {
-                    table_id: table_id.clone(),
-                    action_count: actions.actions.len(),
-                    limit: 5000,
-                });
-            }
-        }
-        
-        // Check transaction age
-        let age = Utc::now() - transaction.started_at;
-        if age > chrono::Duration::hours(1) {
-            violations.push(ConsistencyViolation::TransactionTooOld {
-                age_hours: age.num_hours(),
-                limit_hours: 1,
-            });
-        }
-        
-        Ok(violations)
-    }
-    
-    /// Check if a table exists in the database.
-    async fn table_exists(&self, table_id: &str) -> TxnLogResult<bool> {
-        match &*self.connection {
-            DatabaseConnection::Postgres(pool) => {
-                let result = sqlx::query(
-                    "SELECT 1 FROM dl_tables WHERE table_id = $1 LIMIT 1"
-                )
-                .bind(table_id)
-                .fetch_optional(pool)
-                .await
-                .map_err(|e| TxnLogError::DatabaseError(e.to_string()))?;
-                
-                Ok(result.is_some())
-            }
-            DatabaseConnection::Sqlite(pool) => {
-                let result = sqlx::query(
-                    "SELECT 1 FROM dl_tables WHERE table_id = ?1 LIMIT 1"
-                )
-                .bind(table_id)
-                .fetch_optional(pool)
-                .await
-                .map_err(|e| TxnLogError::DatabaseError(e.to_string()))?;
-                
-                Ok(result.is_some())
-            }
-            DatabaseConnection::DuckDb(_conn) => {
-                Ok(false) // Placeholder
-            }
-        }
-    }
-    
-    /// Get the current version of a table.
-    async fn get_current_version(&self, table_id: &str) -> TxnLogResult<Option<i64>> {
-        match &*self.connection {
-            DatabaseConnection::Postgres(pool) => {
-                let result = sqlx::query(
-                    "SELECT MAX(version) as max_version FROM dl_actions WHERE table_id = $1"
-                )
-                .bind(table_id)
-                .fetch_optional(pool)
-                .await
-                .map_err(|e| TxnLogError::DatabaseError(e.to_string()))?;
-                
-                Ok(result.and_then(|row| row.get::<Option<i64>, _>("max_version")))
-            }
-            DatabaseConnection::Sqlite(pool) => {
-                let result = sqlx::query(
-                    "SELECT MAX(version) as max_version FROM dl_actions WHERE table_id = ?1"
-                )
-                .bind(table_id)
-                .fetch_optional(pool)
-                .await
-                .map_err(|e| TxnLogError::DatabaseError(e.to_string()))?;
-                
-                Ok(result.and_then(|row| row.get::<Option<i64>, _>("max_version")))
-            }
-            DatabaseConnection::DuckDb(_conn) => {
-                Ok(None) // Placeholder
-            }
-        }
-    }
-
-    /// Create a new table in the database.
-    /// Helper method for testing.
-    pub async fn create_table(&self, table_id: &str) -> TxnLogResult<()> {
-        match &*self.connection {
-            DatabaseConnection::Postgres(pool) => {
-                sqlx::query(
-                    "INSERT INTO dl_tables (table_id, created_at, updated_at) VALUES ($1, $2, $3)
-                     ON CONFLICT (table_id) DO NOTHING"
-                )
-                .bind(table_id)
-                .bind(Utc::now())
-                .bind(Utc::now())
-                .execute(pool)
-                .await
-                .map_err(|e| TxnLogError::DatabaseError(e.to_string()))?;
-            }
-            DatabaseConnection::Sqlite(pool) => {
-                sqlx::query(
-                    "INSERT OR IGNORE INTO dl_tables (table_id, created_at, updated_at) VALUES (?1, ?2, ?3)"
-                )
-                .bind(table_id)
-                .bind(Utc::now())
-                .bind(Utc::now())
-                .execute(pool)
-                .await
-                .map_err(|e| TxnLogError::DatabaseError(e.to_string()))?;
-            }
-            DatabaseConnection::DuckDb(_conn) => {
-                return Err(TxnLogError::internal("create_table not implemented for DuckDb"));
-            }
-        }
-        Ok(())
-    }
-
-    /// Cleanup old transaction records.
-    #[instrument(skip(self))]
-    pub async fn cleanup_old_transactions(&self, older_than_hours: i64) -> TxnLogResult<u64> {
-        debug!("Cleaning up transactions older than {} hours", older_than_hours);
-        
-        let cutoff_time = Utc::now() - chrono::Duration::hours(older_than_hours);
-        
-        match &*self.connection {
-            DatabaseConnection::Postgres(pool) => {
-                let result = sqlx::query(
-                    "DELETE FROM dl_multi_table_transactions 
-                     WHERE completed_at IS NOT NULL 
-                     AND completed_at < $1 
-                     AND state IN ($2, $3, $4)"
-                )
-                .bind(cutoff_time)
-                .bind("COMMITTED")
-                .bind("ROLLED_BACK")
-                .bind("FAILED")
-                .execute(pool)
-                .await
-                .map_err(|e| TxnLogError::DatabaseError(e.to_string()))?;
-                
-                Ok(result.rows_affected())
-            }
-            DatabaseConnection::Sqlite(pool) => {
-                let result = sqlx::query(
-                    "DELETE FROM dl_multi_table_transactions 
-                     WHERE completed_at IS NOT NULL 
-                     AND completed_at < ?1 
-                     AND state IN (?2, ?3, ?4)"
-                )
-                .bind(cutoff_time)
-                .bind("COMMITTED")
-                .bind("ROLLED_BACK")
-                .bind("FAILED")
-                .execute(pool)
-                .await
-                .map_err(|e| TxnLogError::DatabaseError(e.to_string()))?;
-                
-                Ok(result.rows_affected())
-            }
-            DatabaseConnection::DuckDb(_conn) => {
-                Ok(0) // Placeholder
-            }
-        }
-    }
-
-    /// Execute atomic SQL commit across all tables.
-    async fn commit_atomic_sql(
-        &self,
-        transaction: &MultiTableTransaction,
-    ) -> TxnLogResult<Vec<TableCommitResult>> {
-        let mut results = Vec::new();
-        let commit_start_time = Utc::now();
-
-        // Check for potential deadlocks before starting the transaction
-        self.check_for_deadlocks(transaction).await?;
-
-        // For now, simulate the commit process with isolation level logging
-        debug!(
-            "Committing transaction {} with isolation level: {}",
-            transaction.transaction_id,
-            transaction.isolation_level
-        );
-
-        // Simulate isolation level enforcement
-        match transaction.isolation_level {
-            TransactionIsolationLevel::ReadCommitted => {
-                debug!("Using READ COMMITTED isolation level");
-            }
-            TransactionIsolationLevel::RepeatableRead => {
-                debug!("Using REPEATABLE READ isolation level");
-            }
-            TransactionIsolationLevel::Serializable => {
-                debug!("Using SERIALIZABLE isolation level");
-            }
-        }
-
-        // Simulate committing each table's actions
-        for (table_id, table_actions) in &transaction.staged_tables {
-            debug!(
-                "Committing {} actions for table {} at version {}",
-                table_actions.actions.len(),
-                table_id,
-                table_actions.expected_version
-            );
-
-            // Create a mock result
-            let result = TableCommitResult {
-                table_id: table_id.clone(),
-                version: table_actions.expected_version,
-                success: true,
-                error: None,
-                actions_committed: table_actions.actions.len() as u32,
-                commit_timestamp: Utc::now(),
-            };
-            results.push(result);
-        }
-
-        debug!("Successfully committed transaction {}", transaction.transaction_id);
-
-        Ok(results)
-    }
-
-    /// Insert transaction metadata record for Postgres.
-    async fn insert_transaction_metadata(
-        &self,
-        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-        transaction: &MultiTableTransaction,
-        start_time: DateTime<Utc>,
-    ) -> TxnLogResult<()> {
-        sqlx::query(
-            "INSERT INTO dl_multi_table_transactions (transaction_id, started_at, table_count, total_action_count, state) 
-             VALUES ($1, $2, $3, $4, $5)"
-        )
-        .bind(&transaction.transaction_id)
-        .bind(start_time)
-        .bind(transaction.table_count() as i32)
-        .bind(transaction.total_action_count() as i32)
-        .bind("ACTIVE")
-        .execute(&mut **tx)
-        .await
-        .map_err(|e| TxnLogError::DatabaseError(e.to_string()))?;
-        Ok(())
-    }
-
-    /// Insert transaction metadata record for SQLite.
-    async fn insert_transaction_metadata_sqlite(
-        &self,
-        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-        transaction: &MultiTableTransaction,
-        start_time: DateTime<Utc>,
-    ) -> TxnLogResult<()> {
-        sqlx::query(
-            "INSERT INTO dl_multi_table_transactions (transaction_id, started_at, table_count, total_action_count, state) 
-             VALUES (?1, ?2, ?3, ?4, ?5)"
-        )
-        .bind(&transaction.transaction_id)
-        .bind(start_time)
-        .bind(transaction.table_count() as i32)
-        .bind(transaction.total_action_count() as i32)
-        .bind("ACTIVE")
-        .execute(&mut **tx)
-        .await
-        .map_err(|e| TxnLogError::DatabaseError(e.to_string()))?;
-        Ok(())
-    }
-
-    /// Update transaction metadata state for Postgres.
-    async fn update_transaction_metadata(
-        &self,
-        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-        transaction_id: &str,
-        state: &str,
-    ) -> TxnLogResult<()> {
-        sqlx::query(
-            "UPDATE dl_multi_table_transactions SET state = $1, completed_at = $2 WHERE transaction_id = $3"
-        )
-        .bind(state)
-        .bind(Utc::now())
-        .bind(transaction_id)
-        .execute(&mut **tx)
-        .await
-        .map_err(|e| TxnLogError::DatabaseError(e.to_string()))?;
-        Ok(())
-    }
-
-    /// Update transaction metadata state for SQLite.
-    async fn update_transaction_metadata_sqlite(
-        &self,
-        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-        transaction_id: &str,
-        state: &str,
-    ) -> TxnLogResult<()> {
-        sqlx::query(
-            "UPDATE dl_multi_table_transactions SET state = ?1, completed_at = ?2 WHERE transaction_id = ?3"
-        )
-        .bind(state)
-        .bind(Utc::now())
-        .bind(transaction_id)
-        .execute(&mut **tx)
-        .await
-        .map_err(|e| TxnLogError::DatabaseError(e.to_string()))?;
-        Ok(())
-    }
-
-    /// Update transaction metadata synchronously (for error handling).
-    fn update_transaction_metadata_sync(
-        &self,
-        transaction_id: &str,
-        state: &str,
-        error_message: &str,
-    ) -> TxnLogResult<()> {
-        // This is a best-effort update for error tracking
-        // In a real implementation, you might want to use a separate connection pool
-        debug!("Updating transaction {} to {} with error: {}", transaction_id, state, error_message);
-        Ok(())
-    }
-
-    /// Commit actions for a single table in Postgres.
-    async fn commit_table_postgres(
-        &self,
-        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-        table_id: &str,
-        table_actions: &TableActions,
-        transaction_id: &str,
-    ) -> TxnLogResult<TableCommitResult> {
-        // Verify expected version for optimistic concurrency
-        let current_version = self.get_table_version_postgres(tx, table_id).await?;
-        if current_version != table_actions.expected_version {
-            return Err(TxnLogError::ConcurrentWrite(
-                format!("Version mismatch for table {}: expected {}, found {}",
-                    table_id, table_actions.expected_version, current_version)
-            ));
-        }
-
-        let next_version = current_version + 1;
-
-        // Insert table version with transaction metadata
-        sqlx::query(
-            "INSERT INTO dl_table_versions (table_id, version, committed_at, committer, operation, operation_params) 
-             VALUES ($1, $2, $3, $4, $5, $6)"
-        )
-        .bind(table_id)
-        .bind(next_version)
-        .bind(Utc::now())
-        .bind(format!("multi-table-{}", transaction_id))
-        .bind(&table_actions.operation)
-        .bind(table_actions.operation_params.as_ref().map(|p| serde_json::to_string(p).unwrap()))
-        .execute(&mut **tx)
-        .await
-        .map_err(|e| TxnLogError::DatabaseError(e.to_string()))?;
-
-        // Insert actions
-        for action in &table_actions.actions {
-            self.single_writer.insert_action_postgres(tx, table_id, next_version, action).await?;
-        }
-
-        Ok(TableCommitResult {
-            table_id: table_id.to_string(),
-            version: next_version,
-            action_count: table_actions.actions.len(),
-            mirroring_triggered: self.config.enable_ordered_mirroring,
-        })
-    }
-
-    /// Commit actions for a single table in SQLite.
-    async fn commit_table_sqlite(
-        &self,
-        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-        table_id: &str,
-        table_actions: &TableActions,
-        transaction_id: &str,
-    ) -> TxnLogResult<TableCommitResult> {
-        // Verify expected version for optimistic concurrency
-        let current_version = self.get_table_version_sqlite(tx, table_id).await?;
-        if current_version != table_actions.expected_version {
-            return Err(TxnLogError::ConcurrentWrite(
-                format!("Version mismatch for table {}: expected {}, found {}",
-                    table_id, table_actions.expected_version, current_version)
-            ));
-        }
-
-        let next_version = current_version + 1;
-
-        // Insert table version with transaction metadata
-        sqlx::query(
-            "INSERT INTO dl_table_versions (table_id, version, committed_at, committer, operation, operation_params) 
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)"
-        )
-        .bind(table_id)
-        .bind(next_version)
-        .bind(Utc::now())
-        .bind(format!("multi-table-{}", transaction_id))
-        .bind(&table_actions.operation)
-        .bind(table_actions.operation_params.as_ref().map(|p| serde_json::to_string(p).unwrap()))
-        .execute(&mut **tx)
-        .await
-        .map_err(|e| TxnLogError::DatabaseError(e.to_string()))?;
-
-        // Insert actions
-        for action in &table_actions.actions {
-            self.single_writer.insert_action_sqlite(tx, table_id, next_version, action).await?;
-        }
-
-        Ok(TableCommitResult {
-            table_id: table_id.to_string(),
-            version: next_version,
-            action_count: table_actions.actions.len(),
-            mirroring_triggered: self.config.enable_ordered_mirroring,
-        })
-    }
-
-    /// Get current version for a table in Postgres.
-    async fn get_table_version_postgres(
-        &self,
-        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-        table_id: &str,
-    ) -> TxnLogResult<i64> {
-        let row = sqlx::query(
-            "SELECT COALESCE(MAX(version), -1) as current_version FROM dl_table_versions WHERE table_id = $1"
-        )
-        .bind(table_id)
-        .fetch_one(&mut **tx)
-        .await
-        .map_err(|e| TxnLogError::DatabaseError(e.to_string()))?;
-
-        Ok(row.get::<i64, _>("current_version"))
-    }
-
-    /// Get current version for a table in SQLite.
-    async fn get_table_version_sqlite(
-        &self,
-        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-        table_id: &str,
-    ) -> TxnLogResult<i64> {
-        let row = sqlx::query(
-            "SELECT COALESCE(MAX(version), -1) as current_version FROM dl_table_versions WHERE table_id = ?1"
-        )
-        .bind(table_id)
-        .fetch_one(&mut **tx)
-        .await
-        .map_err(|e| TxnLogError::DatabaseError(e.to_string()))?;
-
-        Ok(row.get::<i64, _>("current_version"))
-    }
-
-    /// Trigger ordered mirroring for committed tables.
-    async fn trigger_ordered_mirroring(
-        &self,
-        table_results: &[TableCommitResult],
-    ) -> TxnLogResult<Vec<MirroringResult>> {
-        if self.mirror_engine.is_none() {
-            return Ok(Vec::new());
-        }
-
-        let mirror_engine = self.mirror_engine.as_ref().unwrap();
-        let mut mirroring_results = Vec::new();
-
-        debug!("Triggering ordered mirroring for {} tables", table_results.len());
-
-        // Process tables in commit order (deterministic)
-        for (index, result) in table_results.iter().enumerate() {
-            debug!(
-                "Triggering mirroring for table {} version {} (order: {})",
-                result.table_id, result.version, index
-            );
-
-            // Insert mirror status record
-            self.insert_mirror_status(&result.table_id, result.version, "json", "pending").await?;
-
-            // Trigger async mirroring with proper error handling
-            let mirror_result = self.mirror_single_table(
-                mirror_engine,
-                &result.table_id,
-                result.version,
-                index,
-            ).await;
-
-            mirroring_results.push(mirror_result);
-        }
-
-        // Wait for all mirroring operations to complete or timeout
-        self.wait_for_mirroring_completion(mirroring_results).await
-    }
-
-    /// Mirror a single table with error handling.
-    async fn mirror_single_table(
-        &self,
-        mirror_engine: &MirrorEngine,
-        table_id: &str,
-        version: i64,
-        order_index: usize,
-    ) -> MirroringResult {
-        let mirror_engine = mirror_engine.clone();
-        let table_id = table_id.to_string();
-        
-        // Spawn mirroring task
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        
-        tokio::spawn(async move {
-            let result = mirror_engine.mirror_commit(&table_id, version, &[]).await;
-            let _ = tx.send(result);
-        });
-
-        // Wait for completion with timeout
-        let timeout_duration = std::time::Duration::from_secs(300); // 5 minutes
-        match tokio::time::timeout(timeout_duration, rx).await {
-            Ok(Ok(mirror_result)) => {
-                match mirror_result {
-                    Ok(_) => {
-                        debug!("Successfully mirrored table {} version {}", table_id, version);
-                        self.update_mirror_status_success(&table_id, version).await;
-                        MirroringResult {
-                            table_id: table_id.clone(),
-                            version,
-                            success: true,
-                            error: None,
-                        }
-                    }
-                    Err(e) => {
-                        error!("Failed to mirror table {} version {}: {}", table_id, version, e);
-                        self.update_mirror_status_failed(&table_id, version, &e.to_string()).await;
-                        MirroringResult {
-                            table_id: table_id.clone(),
-                            version,
-                            success: false,
-                            error: Some(e.to_string()),
-        }
-    }
-}
-
-
-
-    #[tokio::test]
-    async fn test_isolation_level_display() {
-        assert_eq!(format!("{}", TransactionIsolationLevel::ReadCommitted), "READ COMMITTED");
-        assert_eq!(format!("{}", TransactionIsolationLevel::RepeatableRead), "REPEATABLE READ");
-        assert_eq!(format!("{}", TransactionIsolationLevel::Serializable), "SERIALIZABLE");
-    }
-
-    #[tokio::test]
-    async fn test_deadlock_detection_config() {
-        let mut config = MultiTableConfig::default();
-        assert!(config.enable_deadlock_detection);
-        assert_eq!(config.max_concurrent_transactions, 100);
-        
-        // Test disabling deadlock detection
-        config.enable_deadlock_detection = false;
-        assert!(!config.enable_deadlock_detection);
-    }
-
-    #[tokio::test]
-    async fn test_deadlock_priority_resolution() {
-        let writer = create_test_multi_writer().await;
-        let config = MultiTableConfig::default();
-        
-        let tx1 = MultiTableTransaction::with_isolation_and_priority(
-            config.clone(),
-            TransactionIsolationLevel::ReadCommitted,
-            5
-        );
-        
-        let tx2 = MultiTableTransaction::with_isolation_and_priority(
-            config.clone(),
-            TransactionIsolationLevel::ReadCommitted,
-            10
-        );
-        
-        // Higher priority should win
-        let winner = writer.resolve_deadlock_by_priority(&tx1, &tx2);
-        assert_eq!(winner.transaction_id, tx2.transaction_id);
-        
-        // Equal priority, older transaction wins
-        let tx3 = MultiTableTransaction::with_isolation_and_priority(
-            config.clone(),
-            TransactionIsolationLevel::ReadCommitted,
-            5
-        );
-        
-        // Add small delay to make tx1 older
-        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
-        
-        let winner = writer.resolve_deadlock_by_priority(&tx1, &tx3);
-        assert_eq!(winner.transaction_id, tx1.transaction_id);
-    }
-
-    #[tokio::test]
-    async fn test_transaction_with_serializable_isolation() {
-        let writer = create_test_multi_writer().await;
-        let config = MultiTableConfig::default();
-        
-        let mut transaction = MultiTableTransaction::with_isolation_level(
-            config,
-            TransactionIsolationLevel::Serializable
-        );
-        
-        // Add some test actions
-        let add_file = AddFile {
-            path: "test_file.parquet".to_string(),
-            size: 1000,
-            modification_time: 1234567890,
-            data_change: true,
-            ..Default::default()
-        };
-        
-        transaction.add_files("test_table".to_string(), 0, vec![add_file]).unwrap();
-        
-        // Verify transaction properties
-        assert_eq!(transaction.isolation_level, TransactionIsolationLevel::Serializable);
-        assert_eq!(transaction.table_count(), 1);
-        assert_eq!(transaction.total_action_count(), 1);
-        
-        // Test commit (this will test isolation level enforcement)
-        let result = writer.commit_transaction(transaction).await;
-        assert!(result.is_ok());
-        
-        let commit_result = result.unwrap();
-        assert_eq!(commit_result.table_results.len(), 1);
-        assert!(commit_result.table_results[0].success);
-    }
-
-    #[tokio::test]
-    async fn test_cross_table_consistency_with_isolation() {
-        let writer = create_test_multi_writer().await;
-        let config = MultiTableConfig {
-            enable_consistency_validation: true,
-            default_isolation_level: TransactionIsolationLevel::RepeatableRead,
-            ..Default::default()
-        };
-        
-        let mut transaction = MultiTableTransaction::new(config);
-        
-        // Add actions to multiple tables
-        let add_file1 = AddFile {
-            path: "table1_file.parquet".to_string(),
-            size: 1000,
-            modification_time: 1234567890,
-            data_change: true,
-            ..Default::default()
-        };
-        
-        let add_file2 = AddFile {
-            path: "table2_file.parquet".to_string(),
-            size: 2000,
-            modification_time: 1234567891,
-            data_change: true,
-            ..Default::default()
-        };
-        
-        transaction.add_files("table1".to_string(), 0, vec![add_file1]).unwrap();
-        transaction.add_files("table2".to_string(), 0, vec![add_file2]).unwrap();
-        
-        // Verify isolation level
-        assert_eq!(transaction.isolation_level, TransactionIsolationLevel::RepeatableRead);
-        
-        // Test commit with consistency validation
-        let result = writer.commit_transaction(transaction).await;
-        assert!(result.is_ok());
-        
-        let commit_result = result.unwrap();
-        assert_eq!(commit_result.table_results.len(), 2);
-        assert!(commit_result.table_results.iter().all(|r| r.success));
-        }
-    }
-}
-}
-}
 
     /// Wait for all mirroring operations to complete with enhanced failure handling.
     async fn wait_for_mirroring_completion(
@@ -1571,8 +939,8 @@ impl MultiTableWriter {
                 retry_schedule.push(RetrySchedule {
                     table_id: result.table_id.clone(),
                     version: result.version,
-                    scheduled_at: Utc::now() + chrono::Duration::minutes(retry_delay),
-                    attempt_count: 1,
+                    retry_at: Utc::now() + chrono::Duration::minutes(retry_delay),
+                    attempt: 1,
                 });
             }
         }
@@ -1611,7 +979,7 @@ impl MultiTableWriter {
                 .bind(Utc::now())
                 .execute(pool)
                 .await
-                .map_err(|e| TxnLogError::DatabaseError(e.to_string()))?;
+                .map_err(|e| TxnLogError::database(e.to_string()))?;
             }
             DatabaseConnection::Sqlite(pool) => {
                 sqlx::query(
@@ -1625,7 +993,7 @@ impl MultiTableWriter {
                 .bind(Utc::now())
                 .execute(pool)
                 .await
-                .map_err(|e| TxnLogError::DatabaseError(e.to_string()))?;
+                .map_err(|e| TxnLogError::database(e.to_string()))?;
             }
             DatabaseConnection::DuckDb(_conn) => {
                 // Placeholder
@@ -1664,7 +1032,7 @@ impl MultiTableWriter {
                 .bind(Utc::now())
                 .execute(pool)
                 .await
-                .map_err(|e| TxnLogError::DatabaseError(e.to_string()))?;
+                .map_err(|e| TxnLogError::database(e.to_string()))?;
             }
             DatabaseConnection::Sqlite(pool) => {
                 sqlx::query(
@@ -1680,7 +1048,7 @@ impl MultiTableWriter {
                 .bind(Utc::now())
                 .execute(pool)
                 .await
-                .map_err(|e| TxnLogError::DatabaseError(e.to_string()))?;
+                .map_err(|e| TxnLogError::database(e.to_string()))?;
             }
             DatabaseConnection::DuckDb(_conn) => {
                 // Placeholder
@@ -1721,7 +1089,7 @@ impl MultiTableWriter {
                 .bind(Utc::now())
                 .execute(pool)
                 .await
-                .map_err(|e| TxnLogError::DatabaseError(e.to_string()))?;
+                .map_err(|e| TxnLogError::database(e.to_string()))?;
             }
             DatabaseConnection::Sqlite(pool) => {
                 sqlx::query(
@@ -1730,7 +1098,7 @@ impl MultiTableWriter {
                 .bind(Utc::now())
                 .execute(pool)
                 .await
-                .map_err(|e| TxnLogError::DatabaseError(e.to_string()))?;
+                .map_err(|e| TxnLogError::database(e.to_string()))?;
             }
             DatabaseConnection::DuckDb(_conn) => {
                 // Placeholder
@@ -1752,7 +1120,7 @@ impl MultiTableWriter {
                 .bind(Utc::now())
                 .execute(pool)
                 .await
-                .map_err(|e| TxnLogError::DatabaseError(e.to_string()))?;
+                .map_err(|e| TxnLogError::database(e.to_string()))?;
             }
             DatabaseConnection::Sqlite(pool) => {
                 sqlx::query(
@@ -1761,7 +1129,7 @@ impl MultiTableWriter {
                 .bind(Utc::now())
                 .execute(pool)
                 .await
-                .map_err(|e| TxnLogError::DatabaseError(e.to_string()))?;
+                .map_err(|e| TxnLogError::database(e.to_string()))?;
             }
             DatabaseConnection::DuckDb(_conn) => {
                 // Placeholder
@@ -1862,7 +1230,7 @@ impl MultiTableWriter {
                 .bind(Utc::now())
                 .execute(pool)
                 .await
-                .map_err(|e| TxnLogError::DatabaseError(e.to_string()))?;
+                .map_err(|e| TxnLogError::database(e.to_string()))?;
             }
             DatabaseConnection::Sqlite(pool) => {
                 sqlx::query(
@@ -1875,7 +1243,7 @@ impl MultiTableWriter {
                 .bind(Utc::now())
                 .execute(pool)
                 .await
-                .map_err(|e| TxnLogError::DatabaseError(e.to_string()))?;
+                .map_err(|e| TxnLogError::database(e.to_string()))?;
             }
             DatabaseConnection::DuckDb(_conn) => {
                 // Placeholder
@@ -1903,7 +1271,7 @@ impl MultiTableWriter {
                 .bind(Utc::now())
                 .execute(pool)
                 .await
-                .map_err(|e| TxnLogError::DatabaseError(e.to_string()))?;
+                .map_err(|e| TxnLogError::database(e.to_string()))?;
             }
             DatabaseConnection::Sqlite(pool) => {
                 sqlx::query(
@@ -1916,7 +1284,7 @@ impl MultiTableWriter {
                 .bind(Utc::now())
                 .execute(pool)
                 .await
-                .map_err(|e| TxnLogError::DatabaseError(e.to_string()))?;
+                .map_err(|e| TxnLogError::database(e.to_string()))?;
             }
             DatabaseConnection::DuckDb(_conn) => {
                 // Placeholder
@@ -2010,7 +1378,7 @@ impl MultiTableWriter {
                     .bind(schedule.attempt_count)
                     .execute(pool)
                     .await
-                    .map_err(|e| TxnLogError::DatabaseError(e.to_string()))?;
+                    .map_err(|e| TxnLogError::database(e.to_string()))?;
                 }
                 DatabaseConnection::Sqlite(pool) => {
                     sqlx::query(
@@ -2023,7 +1391,7 @@ impl MultiTableWriter {
                     .bind(schedule.attempt_count)
                     .execute(pool)
                     .await
-                    .map_err(|e| TxnLogError::DatabaseError(e.to_string()))?;
+                    .map_err(|e| TxnLogError::database(e.to_string()))?;
                 }
                 DatabaseConnection::DuckDb(_conn) => {
                     // Placeholder
@@ -2099,7 +1467,7 @@ impl MultiTableWriter {
                 .bind(version)
                 .execute(pool)
                 .await
-                .map_err(|e| TxnLogError::DatabaseError(e.to_string()))?;
+                .map_err(|e| TxnLogError::database(e.to_string()))?;
             }
             DatabaseConnection::Sqlite(pool) => {
                 sqlx::query(
@@ -2115,7 +1483,7 @@ impl MultiTableWriter {
                 .bind(version)
                 .execute(pool)
                 .await
-                .map_err(|e| TxnLogError::DatabaseError(e.to_string()))?;
+                .map_err(|e| TxnLogError::database(e.to_string()))?;
             }
             DatabaseConnection::DuckDb(_conn) => {
                 // Placeholder for DuckDB
@@ -2142,7 +1510,7 @@ impl MultiTableWriter {
                 .bind(version)
                 .fetch_optional(pool)
                 .await
-                .map_err(|e| TxnLogError::DatabaseError(e.to_string()))?;
+                .map_err(|e| TxnLogError::database(e.to_string()))?;
                 
                 Ok(row.map(|r| MirrorStatusInfo {
                     table_id: table_id.to_string(),
@@ -2166,7 +1534,7 @@ impl MultiTableWriter {
                 .bind(version)
                 .fetch_optional(pool)
                 .await
-                .map_err(|e| TxnLogError::DatabaseError(e.to_string()))?;
+                .map_err(|e| TxnLogError::database(e.to_string()))?;
                 
                 Ok(row.map(|r| MirrorStatusInfo {
                     table_id: table_id.to_string(),
@@ -2204,7 +1572,7 @@ impl MultiTableWriter {
                 .bind(5) // Max retry attempts
                 .fetch_all(pool)
                 .await
-                .map_err(|e| TxnLogError::DatabaseError(e.to_string()))?;
+                .map_err(|e| TxnLogError::database(e.to_string()))?;
                 
                 let mut retried_count = 0;
                 for row in rows {
@@ -2222,7 +1590,7 @@ impl MultiTableWriter {
                     .bind(version)
                     .execute(pool)
                     .await
-                    .map_err(|e| TxnLogError::DatabaseError(e.to_string()))?;
+                    .map_err(|e| TxnLogError::database(e.to_string()))?;
                     
                     retried_count += 1;
                 }
@@ -2240,7 +1608,7 @@ impl MultiTableWriter {
                 .bind(5) // Max retry attempts
                 .fetch_all(pool)
                 .await
-                .map_err(|e| TxnLogError::DatabaseError(e.to_string()))?;
+                .map_err(|e| TxnLogError::database(e.to_string()))?;
                 
                 let mut retried_count = 0;
                 for row in rows {
@@ -2258,7 +1626,7 @@ impl MultiTableWriter {
                     .bind(version)
                     .execute(pool)
                     .await
-                    .map_err(|e| TxnLogError::DatabaseError(e.to_string()))?;
+                    .map_err(|e| TxnLogError::database(e.to_string()))?;
                     
                     retried_count += 1;
                 }
@@ -2294,7 +1662,7 @@ impl MultiTableWriter {
                 .bind(Utc::now())
                 .execute(pool)
                 .await
-                .map_err(|e| TxnLogError::DatabaseError(e.to_string()))?;
+                .map_err(|e| TxnLogError::database(e.to_string()))?;
             }
             DatabaseConnection::Sqlite(pool) => {
                 sqlx::query(
@@ -2308,10 +1676,10 @@ impl MultiTableWriter {
                 .bind(Utc::now())
                 .execute(pool)
                 .await
-                .map_err(|e| TxnLogError::DatabaseError(e.to_string()))?;
+                .map_err(|e| TxnLogError::database(e.to_string()))?;
             }
             DatabaseConnection::DuckDb(_conn) => {
-                return Err(TxnLogError::DatabaseError(
+                return Err(TxnLogError::database(
                     "DuckDB mirror status not implemented".to_string()
                 ));
             }
@@ -2385,18 +1753,16 @@ impl MultiTableWriter {
     }
 
     /// Resolve deadlock by priority (higher priority wins).
-    fn resolve_deadlock_by_priority(&self, tx1: &MultiTableTransaction, tx2: &MultiTableTransaction) -> &MultiTableTransaction {
+    /// Returns true if tx1 should win, false if tx2 should win.
+    fn resolve_deadlock_by_priority(&self, tx1: &MultiTableTransaction, tx2: &MultiTableTransaction) -> bool {
         if tx1.priority > tx2.priority {
-            tx1
+            true
         } else if tx2.priority > tx1.priority {
-            tx2
+            false
         } else {
             // If equal priority, the older transaction wins
-            if tx1.started_at < tx2.started_at {
-                tx1
-            } else {
-                tx2
-            }
+            tx1.started_at < tx2.started_at
+        }
     }
 }
 
