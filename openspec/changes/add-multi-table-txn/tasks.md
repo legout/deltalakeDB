@@ -1,21 +1,21 @@
 ## 1. Transaction API Design
-- [ ] 1.1 Create `MultiTableTransaction` struct managing staged actions
-- [ ] 1.2 Design API: `begin()`, `stage_table()`, `commit()`, `rollback()`
-- [ ] 1.3 Support multiple table writes within transaction scope
-- [ ] 1.4 Validate all table versions before commit
+- [x] 1.1 Create `MultiTableTransaction` struct managing staged actions
+- [x] 1.2 Design API: `begin()`, `stage_table()`, `commit()`, `rollback()`
+- [x] 1.3 Support multiple table writes within transaction scope
+- [x] 1.4 Validate all table versions before commit
 
 ## 2. Staged Actions
-- [ ] 2.1 Implement staging for add/remove/metadata actions per table
-- [ ] 2.2 Store staged actions in memory with table_id mapping
-- [ ] 2.3 Validate each table's actions independently
-- [ ] 2.4 Prevent duplicate staging for same table
+- [x] 2.1 Implement staging for add/remove/metadata actions per table
+- [x] 2.2 Store staged actions in memory with table_id mapping
+- [x] 2.3 Validate each table's actions independently
+- [x] 2.4 Prevent duplicate staging for same table
 
 ## 3. Atomic Commit
-- [ ] 3.1 Open single database transaction for all tables
-- [ ] 3.2 Validate versions for all tables with row locks
-- [ ] 3.3 Insert actions for all tables within transaction
-- [ ] 3.4 Update versions for all tables atomically
-- [ ] 3.5 Commit transaction or rollback on any failure
+- [x] 3.1 Open single database transaction for all tables
+- [x] 3.2 Validate versions for all tables with row locks
+- [x] 3.3 Insert actions for all tables within transaction
+- [x] 3.4 Update versions for all tables atomically
+- [x] 3.5 Commit transaction or rollback on any failure
 
 ## 4. Post-Commit Mirroring
 - [x] 4.1 Mirror each table's version to `_delta_log` after commit
