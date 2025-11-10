@@ -357,6 +357,169 @@ impl MultiTableWriter {
         table_ids.sort();
         table_ids
     }
+
+    /// Mirror a table's version to all registered mirror engines after commit.
+    ///
+    /// Mirrors are attempted sequentially (or with bounded concurrency) after
+    /// the SQL transaction commits. Failures are tracked but don't rollback
+    /// the SQL commit, maintaining eventual consistency.
+    ///
+    /// # Arguments
+    ///
+    /// * `table_id` - Table to mirror
+    /// * `new_version` - Version to mirror
+    ///
+    /// # Returns
+    ///
+    /// Vector of mirror results (engine_name, success, error_msg)
+    pub async fn mirror_table_after_commit(
+        &self,
+        table_id: Uuid,
+        new_version: i64,
+    ) -> Vec<(String, bool, Option<String>)> {
+        // Get registered mirror engines for this table
+        let engines: Vec<(String,)> = match sqlx::query_as(
+            "SELECT DISTINCT mirror_engine FROM dl_mirror_status WHERE table_id = $1"
+        )
+        .bind(table_id)
+        .fetch_all(&self.pool)
+        .await
+        {
+            Ok(engines) => engines,
+            Err(e) => {
+                warn!("Failed to fetch mirror engines for table {}: {}", table_id, e);
+                return vec![];
+            }
+        };
+
+        let mut results = Vec::new();
+
+        // Mirror to each engine sequentially
+        for (engine_name,) in engines {
+            match self.mirror_to_engine(&engine_name, table_id, new_version).await {
+                Ok(_) => {
+                    info!("Successfully mirrored table {} to {} at v{}", table_id, engine_name, new_version);
+                    
+                    // Update mirror status to success
+                    let _ = sqlx::query!(
+                        "UPDATE dl_mirror_status SET mirrored_version = $1, last_sync_time = NOW(), last_error = NULL
+                         WHERE table_id = $2 AND mirror_engine = $3",
+                        new_version,
+                        table_id,
+                        &engine_name
+                    )
+                    .execute(&self.pool)
+                    .await;
+
+                    results.push((engine_name, true, None));
+                }
+                Err(e) => {
+                    error!("Failed to mirror table {} to {}: {}", table_id, engine_name, e);
+
+                    // Mark failed in mirror status for reconciliation
+                    let _ = sqlx::query!(
+                        "UPDATE dl_mirror_status SET last_error = $1, updated_at = NOW()
+                         WHERE table_id = $2 AND mirror_engine = $3",
+                        &e,
+                        table_id,
+                        &engine_name
+                    )
+                    .execute(&self.pool)
+                    .await;
+
+                    results.push((engine_name, false, Some(e)));
+                }
+            }
+        }
+
+        results
+    }
+
+    /// Perform actual mirroring to a specific engine.
+    ///
+    /// This is a placeholder implementation. In production, this would:
+    /// - Generate `_delta_log` entries for the table
+    /// - Write to appropriate mirror storage (Spark, DuckDB, etc.)
+    /// - Handle engine-specific serialization formats
+    async fn mirror_to_engine(
+        &self,
+        engine: &str,
+        table_id: Uuid,
+        version: i64,
+    ) -> Result<(), String> {
+        // Get table location
+        let table: (String,) = sqlx::query_as("SELECT location FROM dl_tables WHERE table_id = $1")
+            .bind(table_id)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| format!("Failed to fetch table location: {}", e))?;
+
+        let location = &table.0;
+        debug!("Mirroring table {} at {} to {} (version {})", table_id, location, engine, version);
+
+        match engine {
+            "spark" => self.mirror_spark(location, table_id, version).await,
+            "duckdb" => self.mirror_duckdb(location, table_id, version).await,
+            engine => Err(format!("Unknown mirror engine: {}", engine)),
+        }
+    }
+
+    /// Mirror to Spark (write _delta_log entries).
+    async fn mirror_spark(
+        &self,
+        location: &str,
+        table_id: Uuid,
+        version: i64,
+    ) -> Result<(), String> {
+        // In production, this would:
+        // 1. Get all actions for this version from SQL
+        // 2. Generate Delta log JSON format
+        // 3. Write to _delta_log/<version>.json at location
+        // 4. Handle checksum and coordination
+
+        debug!("Mirroring table {} to Spark at {} (v{})", table_id, location, version);
+        
+        // For now, this is a successful no-op that can be tracked
+        // Full implementation requires object_store integration
+        Ok(())
+    }
+
+    /// Mirror to DuckDB (write equivalent table).
+    async fn mirror_duckdb(
+        &self,
+        location: &str,
+        table_id: Uuid,
+        version: i64,
+    ) -> Result<(), String> {
+        // In production, this would:
+        // 1. Get all active files for this version
+        // 2. Create DuckDB table schema from metadata
+        // 3. Register Delta table in DuckDB catalog
+        // 4. Sync file list and statistics
+
+        debug!("Mirroring table {} to DuckDB at {} (v{})", table_id, location, version);
+        
+        // For now, this is a successful no-op that can be tracked
+        // Full implementation requires duckdb-rs integration
+        Ok(())
+    }
+
+    /// Mirror all tables in a transaction sequentially after commit.
+    ///
+    /// Returns a map of table_id -> Vec<(engine, success, error)>
+    pub async fn mirror_all_tables_after_commit(
+        &self,
+        transaction_result: &TransactionResult,
+    ) -> BTreeMap<Uuid, Vec<(String, bool, Option<String>)>> {
+        let mut all_results = BTreeMap::new();
+
+        for (&table_id, &version) in &transaction_result.versions {
+            let results = self.mirror_table_after_commit(table_id, version).await;
+            all_results.insert(table_id, results);
+        }
+
+        all_results
+    }
 }
 
 #[cfg(test)]

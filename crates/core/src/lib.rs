@@ -38,6 +38,7 @@
 
 pub mod error;
 pub mod mocks;
+pub mod python;
 pub mod table;
 pub mod traits;
 pub mod transaction;
@@ -45,6 +46,7 @@ pub mod types;
 pub mod uri;
 
 pub use error::TxnLogError;
+pub use python::{PyMultiTableTransaction, PyTransactionConfig, PyTransactionResult};
 pub use table::{DeltaTable, TableError};
 pub use traits::{TxnLogReader, TxnLogWriter};
 pub use transaction::{
