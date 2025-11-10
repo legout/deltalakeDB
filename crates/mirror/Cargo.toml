@@ -8,12 +8,32 @@ authors.workspace = true
 publish = false
 
 [dependencies]
-# Placeholder for future dependencies
-# deltalakedb-core = { path = "../core" }
-# serde = { workspace = true }
-# serde_json = { workspace = true }
-# tracing = { workspace = true }
+deltalakedb-core = { path = "../core" }
+deltalakedb-sql = { path = "../sql" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+
+# Object storage
+object-store = { workspace = true }
+parquet = { workspace = true }
+
+# HTTP client for object storage
+reqwest = { version = "0.11", features = ["json"] }
+
+# Retry and backoff
+backoff = { version = "0.4", features = ["tokio"] }
+
+# Metrics and monitoring
+metrics = "0.21"
+tempfile = "3.0"
 
 [dev-dependencies]
-# Placeholder for future dev dependencies
-# tokio-test = "0.4"
+tokio-test = "0.4"
+tempfile = "3.0"
+proptest = "1.0"

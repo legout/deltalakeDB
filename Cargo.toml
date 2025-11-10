@@ -24,10 +24,20 @@ thiserror = "1.0"
 proptest = "1.0"
 quickcheck = "1.0"
 
-# Placeholder for future dependencies
-# delta-rs = { version = "...", default-features = false }
-# sqlx = { version = "...", default-features = false, features = ["runtime-tokio-rustls", "postgres", "sqlite"] }
-# duckdb = { version = "..." }
-# tokio = { version = "1", features = ["full"] }
-# tracing = "0.1"
-# tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# SQL and async dependencies
+sqlx = { version = "0.7", default-features = false, features = ["runtime-tokio-rustls", "postgres", "sqlite", "chrono", "uuid", "json"] }
+duckdb = { version = "0.9", features = ["bundled", "chrono", "uuid", "json"] }
+tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
+
+# Tracing and monitoring
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Connection pooling
+deadpool = "0.10"
+deadpool-postgres = { version = "0.12", features = ["rt_tokio_1"] }
+
+# Object storage and mirroring
+object-store = { version = "0.8", features = ["aws", "azure", "gcp"] }
+parquet = { version = "50.0", features = ["async", "json"] }
