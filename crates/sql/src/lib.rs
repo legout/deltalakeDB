@@ -20,6 +20,7 @@ pub mod two_phase_commit;
 pub mod savepoints;
 pub mod transaction_monitor;
 pub mod optimistic_concurrency;
+pub mod performance;
 
 #[cfg(test)]
 pub mod tests;
@@ -40,6 +41,12 @@ pub use transaction_monitor::{
 };
 pub use optimistic_concurrency::{
     OptimisticConcurrencyManager, VersionInfo, ConflictResult, CasResult, ConflictStats
+};
+pub use performance::{
+    PerformanceManager, PerformanceConfig, PerformanceStats,
+    MaterializedViewManager, ViewDefinition, RefreshStrategy, ViewStatus,
+    QueryOptimizer, QueryPlan, OptimizationRule,
+    CacheManager, CacheConfig, CacheLevel, CacheMetrics
 };
 
 /// Configuration for database connections
