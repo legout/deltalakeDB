@@ -4,20 +4,7 @@
 
 #![warn(missing_docs)]
 
-/// Placeholder module to ensure the crate compiles.
-pub mod placeholder {
-    /// Placeholder function.
-    pub fn hello() -> &'static str {
-        "Hello from deltalakedb-sql"
-    }
-}
+/// Postgres-backed transaction log reader implementation.
+pub mod postgres;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn placeholder_hello() {
-        assert_eq!(placeholder::hello(), "Hello from deltalakedb-sql");
-    }
-}
+pub use postgres::{PostgresConnectionOptions, PostgresTxnLogReader};
