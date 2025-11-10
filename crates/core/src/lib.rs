@@ -40,12 +40,14 @@ pub mod error;
 pub mod mocks;
 pub mod traits;
 pub mod types;
+pub mod uri;
 
 pub use error::TxnLogError;
 pub use traits::{TxnLogReader, TxnLogWriter};
 pub use types::{
     Action, AddFile, CommitHandle, MetadataUpdate, ProtocolUpdate, RemoveFile, Snapshot, TxnAction,
 };
+pub use uri::{DeltaSqlUri, DuckDbUri, PostgresUri, SqliteUri, UriError};
 
 #[cfg(test)]
 mod tests {

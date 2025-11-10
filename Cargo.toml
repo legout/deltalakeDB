@@ -21,6 +21,9 @@ async-trait = "0.1"
 anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+url = "2"
+regex = "1"
+urlencoding = "2"
 
 # Placeholder for future dependencies
 # delta-rs = { version = "...", default-features = false }
