@@ -120,11 +120,13 @@
 #![warn(missing_docs)]
 
 pub mod mirror_status;
+pub mod multi_table_writer;
 pub mod reader;
 pub mod schema;
 pub mod writer;
 
 pub use mirror_status::MirrorStatusTracker;
+pub use multi_table_writer::MultiTableWriter;
 pub use reader::PostgresReader;
 pub use schema::*;
 pub use writer::PostgresWriter;
