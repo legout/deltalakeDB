@@ -78,22 +78,25 @@ impl PyMultiTableTransaction {
 
     /// Stage a table for writing (Python `.write()` method).
     ///
+    /// Creates placeholder actions for the table and stages them in the transaction.
+    /// In a complete implementation, this would convert pandas DataFrames to proper Delta actions.
+    ///
     /// # Arguments
     ///
     /// * `table_id` - UUID of the table
     /// * `mode` - Write mode: "append", "overwrite", or "ignore"
-    /// * `action_count` - Number of actions being staged
+    /// * `num_files` - Number of files being added (for testing/demo)
     ///
     /// # Returns
     ///
-    /// Number of actions staged for this table
+    /// Number of actions actually staged
     fn stage_table(
         &self,
         table_id: String,
         mode: String,
-        action_count: usize,
+        num_files: usize,
     ) -> PyResult<usize> {
-        let _table_uuid = Uuid::parse_str(&table_id)
+        let table_uuid = Uuid::parse_str(&table_id)
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(
                 format!("Invalid table ID: {}", e)
             ))?;
@@ -106,32 +109,86 @@ impl PyMultiTableTransaction {
         }
 
         // Validate configuration limits
-        if action_count > self.config.max_files_per_table {
+        if num_files > self.config.max_files_per_table {
             return Err(pyo3::exceptions::PyValueError::new_err(
                 format!("Maximum {} files per table exceeded", self.config.max_files_per_table)
             ));
         }
 
-        Ok(action_count)
+        // Create placeholder actions for staging
+        // In production, these would be created from pandas DataFrame data
+        let mut actions = Vec::new();
+        for i in 0..num_files {
+            actions.push(crate::types::Action::Add(crate::types::AddFile {
+                path: format!("part-{:06}.parquet", i),
+                size: 1024 * (i as i64 + 1), // Placeholder sizes
+                modification_time: chrono::Utc::now().timestamp_millis(),
+                data_change_version: 0,
+            }));
+        }
+
+        // Stage the table in the transaction
+        // We need to create a tokio runtime to handle the async mutex
+        let rt = tokio::runtime::Runtime::new()
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(
+                format!("Failed to create tokio runtime: {}", e)
+            ))?;
+
+        rt.block_on(async {
+            let mut tx = self.inner.lock().await;
+            match tx.stage_table(table_uuid, actions) {
+                Ok(_) => Ok(num_files),
+                Err(e) => Err(pyo3::exceptions::PyValueError::new_err(
+                    format!("Failed to stage table: {}", e)
+                ))
+            }
+        })
     }
 
     /// Commit all staged tables atomically.
+    /// 
+    /// This is called by __exit__ when exiting the context manager normally.
+    /// Creates a transaction result with all staged tables' versions.
     fn commit(&self) -> PyResult<PyTransactionResult> {
-        // In production, this would:
-        // 1. Call MultiTableWriter::commit()
-        // 2. Wait for mirror operations
-        // 3. Return result with new versions
+        let rt = tokio::runtime::Runtime::new()
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(
+                format!("Failed to create tokio runtime: {}", e)
+            ))?;
 
-        Ok(PyTransactionResult {
-            transaction_id: Uuid::new_v4().to_string(),
-            table_count: 0,
-            timestamp_ms: chrono::Utc::now().timestamp_millis(),
+        rt.block_on(async {
+            let tx = self.inner.lock().await;
+            
+            // Build transaction result with all staged tables
+            let mut result = deltalakedb_core::TransactionResult::new(tx.transaction_id().to_string());
+            
+            for (table_id, _staged_table) in tx.staged_tables().iter() {
+                // In production, these would come from the actual commit
+                // For now, assign incrementing versions for demo
+                result.add_version(*table_id, 1);
+            }
+
+            Ok(PyTransactionResult {
+                transaction_id: result.transaction_id().to_string(),
+                table_count: result.table_count(),
+                timestamp_ms: chrono::Utc::now().timestamp_millis(),
+            })
         })
     }
 
     /// Rollback all staged tables (clear without committing).
+    /// 
+    /// This is called by __exit__ when an exception occurs in the context manager.
     fn rollback(&self) -> PyResult<()> {
-        Ok(())
+        let rt = tokio::runtime::Runtime::new()
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(
+                format!("Failed to create tokio runtime: {}", e)
+            ))?;
+
+        rt.block_on(async {
+            let mut tx = self.inner.lock().await;
+            tx.clear_staged();
+            Ok(())
+        })
     }
 
     /// Get transaction ID.
