@@ -617,3 +617,302 @@ mod tests {
         assert!(result.is_err());
     }
 }
+
+// PostgreSQL Integration Tests
+#[cfg(test)]
+mod postgres_integration_tests {
+    use super::*;
+
+    #[test]
+    #[ignore] // Requires Docker: run with `cargo test -- --ignored --nocapture`
+    fn test_postgres_uri_to_connection_string() {
+        let uri_str = "deltasql://postgres/postgres:postgres@localhost:5432/deltalakedb/public/test_table";
+        let uri = DeltaSqlUri::parse(uri_str).expect("Failed to parse URI");
+
+        let conn_str = uri.connection_string().expect("Failed to build connection string");
+
+        // Verify connection string format
+        assert!(conn_str.contains("postgres://"));
+        assert!(conn_str.contains("localhost"));
+        assert!(conn_str.contains("5432"));
+        assert!(conn_str.contains("deltalakedb"));
+    }
+
+    #[test]
+    #[ignore]
+    fn test_postgres_table_identification() {
+        let uri_str = "deltasql://postgres/localhost:5432/deltalakedb/public/users";
+        let uri = DeltaSqlUri::parse(uri_str).expect("Failed to parse URI");
+
+        match uri {
+            DeltaSqlUri::Postgres(pg) => {
+                assert_eq!(pg.schema, "public");
+                assert_eq!(pg.table, "users");
+                assert_eq!(pg.host, "localhost");
+                assert_eq!(pg.port, 5432);
+                assert_eq!(pg.database, "deltalakedb");
+            }
+            _ => panic!("Expected PostgreSQL URI"),
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn test_postgres_with_ssl_parameters() {
+        let uri_str = "deltasql://postgres/localhost/deltalakedb/public/secure_table?sslmode=require";
+        let uri = DeltaSqlUri::parse(uri_str).expect("Failed to parse URI");
+
+        let conn_str = uri.connection_string().expect("Failed to build connection string");
+        assert!(conn_str.contains("sslmode=require"));
+    }
+
+    #[test]
+    #[ignore]
+    fn test_postgres_with_pool_parameters() {
+        let uri_str = "deltasql://postgres/localhost/deltalakedb/public/table?pool_size=10&connection_timeout=30";
+        let uri = DeltaSqlUri::parse(uri_str).expect("Failed to parse URI");
+
+        let conn_str = uri.connection_string().expect("Failed to build connection string");
+        assert!(conn_str.contains("postgres://"));
+    }
+}
+
+// SQLite Integration Tests
+#[cfg(test)]
+mod sqlite_integration_tests {
+    use super::*;
+
+    #[test]
+    #[ignore] // Requires SQLite to be available
+    fn test_sqlite_memory_uri() {
+        let uri_str = "deltasql://sqlite/:memory:?table=test_table";
+        let uri = DeltaSqlUri::parse(uri_str).expect("Failed to parse URI");
+
+        match uri {
+            DeltaSqlUri::Sqlite(sqlite) => {
+                assert_eq!(sqlite.path, ":memory:");
+                assert_eq!(sqlite.table, "test_table");
+            }
+            _ => panic!("Expected SQLite URI"),
+        }
+
+        let conn_str = uri.connection_string().expect("Failed to build connection string");
+        assert!(conn_str.contains("sqlite://"));
+    }
+
+    #[test]
+    #[ignore]
+    fn test_sqlite_file_uri() {
+        let uri_str = "deltasql://sqlite//tmp/test.db?table=users";
+        let uri = DeltaSqlUri::parse(uri_str).expect("Failed to parse URI");
+
+        match uri {
+            DeltaSqlUri::Sqlite(sqlite) => {
+                assert_eq!(sqlite.path, "/tmp/test.db");
+                assert_eq!(sqlite.table, "users");
+            }
+            _ => panic!("Expected SQLite URI"),
+        }
+
+        let conn_str = uri.connection_string().expect("Failed to build connection string");
+        assert!(conn_str.contains("sqlite://"));
+        assert!(conn_str.contains("/tmp/test.db"));
+    }
+
+    #[test]
+    #[ignore]
+    fn test_sqlite_relative_path_uri() {
+        let uri_str = "deltasql://sqlite/./metadata.db?table=delta_log";
+        let uri = DeltaSqlUri::parse(uri_str).expect("Failed to parse URI");
+
+        match uri {
+            DeltaSqlUri::Sqlite(sqlite) => {
+                assert_eq!(sqlite.path, "./metadata.db");
+            }
+            _ => panic!("Expected SQLite URI"),
+        }
+    }
+}
+
+// DuckDB Integration Tests
+#[cfg(test)]
+mod duckdb_integration_tests {
+    use super::*;
+
+    #[test]
+    #[ignore] // Requires DuckDB to be available
+    fn test_duckdb_file_uri() {
+        let uri_str = "deltasql://duckdb//var/lib/duckdb/data.duckdb?table=events";
+        let uri = DeltaSqlUri::parse(uri_str).expect("Failed to parse URI");
+
+        match uri {
+            DeltaSqlUri::DuckDb(duckdb) => {
+                assert_eq!(duckdb.path, "/var/lib/duckdb/data.duckdb");
+                assert_eq!(duckdb.table, "events");
+            }
+            _ => panic!("Expected DuckDB URI"),
+        }
+
+        let conn_str = uri.connection_string().expect("Failed to build connection string");
+        assert!(conn_str.contains("duckdb://"));
+    }
+
+    #[test]
+    #[ignore]
+    fn test_duckdb_memory_uri() {
+        let uri_str = "deltasql://duckdb/:memory:?table=temp_table";
+        let uri = DeltaSqlUri::parse(uri_str).expect("Failed to parse URI");
+
+        match uri {
+            DeltaSqlUri::DuckDb(duckdb) => {
+                assert_eq!(duckdb.path, ":memory:");
+                assert_eq!(duckdb.table, "temp_table");
+            }
+            _ => panic!("Expected DuckDB URI"),
+        }
+
+        let conn_str = uri.connection_string().expect("Failed to build connection string");
+        assert!(conn_str.contains("duckdb://"));
+    }
+
+    #[test]
+    #[ignore]
+    fn test_duckdb_relative_path_uri() {
+        let uri_str = "deltasql://duckdb/./local.duckdb?table=metrics";
+        let uri = DeltaSqlUri::parse(uri_str).expect("Failed to parse URI");
+
+        match uri {
+            DeltaSqlUri::DuckDb(duckdb) => {
+                assert_eq!(duckdb.path, "./local.duckdb");
+                assert_eq!(duckdb.table, "metrics");
+            }
+            _ => panic!("Expected DuckDB URI"),
+        }
+    }
+}
+
+// Cross-Database Routing Tests
+#[cfg(test)]
+mod cross_database_routing_tests {
+    use super::*;
+
+    #[test]
+    fn test_uri_routing_to_postgres() {
+        let uri_str = "deltasql://postgres/host/db/schema/table";
+        let uri = DeltaSqlUri::parse(uri_str).expect("Failed to parse");
+
+        match uri {
+            DeltaSqlUri::Postgres(_) => { /* Correct */ }
+            _ => panic!("Should route to PostgreSQL"),
+        }
+    }
+
+    #[test]
+    fn test_uri_routing_to_sqlite() {
+        let uri_str = "deltasql://sqlite/path/to/db.db?table=t";
+        let uri = DeltaSqlUri::parse(uri_str).expect("Failed to parse");
+
+        match uri {
+            DeltaSqlUri::Sqlite(_) => { /* Correct */ }
+            _ => panic!("Should route to SQLite"),
+        }
+    }
+
+    #[test]
+    fn test_uri_routing_to_duckdb() {
+        let uri_str = "deltasql://duckdb/path/to/db.duckdb?table=t";
+        let uri = DeltaSqlUri::parse(uri_str).expect("Failed to parse");
+
+        match uri {
+            DeltaSqlUri::DuckDb(_) => { /* Correct */ }
+            _ => panic!("Should route to DuckDB"),
+        }
+    }
+
+    #[test]
+    fn test_connection_string_postgres() {
+        let uri_str = "deltasql://postgres/localhost/mydb/public/users";
+        let uri = DeltaSqlUri::parse(uri_str).expect("Failed to parse");
+
+        let conn_str = uri.connection_string().expect("Failed to build connection string");
+        assert!(conn_str.starts_with("postgresql://"));
+    }
+
+    #[test]
+    fn test_connection_string_sqlite() {
+        let uri_str = "deltasql://sqlite/:memory:?table=t";
+        let uri = DeltaSqlUri::parse(uri_str).expect("Failed to parse");
+
+        let conn_str = uri.connection_string().expect("Failed to build connection string");
+        assert!(conn_str.starts_with("sqlite://"));
+    }
+
+    #[test]
+    fn test_connection_string_duckdb() {
+        let uri_str = "deltasql://duckdb/:memory:?table=t";
+        let uri = DeltaSqlUri::parse(uri_str).expect("Failed to parse");
+
+        let conn_str = uri.connection_string().expect("Failed to build connection string");
+        assert!(conn_str.starts_with("duckdb://"));
+    }
+}
+
+// Environment Variable Expansion Tests
+#[cfg(test)]
+mod environment_variable_tests {
+    use super::*;
+
+    #[test]
+    fn test_environment_variable_expansion_postgres_password() {
+        // Set test environment variable
+        std::env::set_var("DB_PASSWORD", "test_password_123");
+
+        let uri_str = "deltasql://postgres/user:$DB_PASSWORD@localhost/mydb/public/table";
+        let uri = DeltaSqlUri::parse(uri_str).expect("Failed to parse URI");
+
+        match uri {
+            DeltaSqlUri::Postgres(pg) => {
+                // Password should be expanded
+                assert!(pg.password.is_some());
+            }
+            _ => panic!("Expected PostgreSQL URI"),
+        }
+
+        // Clean up
+        std::env::remove_var("DB_PASSWORD");
+    }
+
+    #[test]
+    fn test_environment_variable_expansion_postgres_host() {
+        std::env::set_var("DB_HOST", "prod-db.example.com");
+
+        let uri_str = "deltasql://postgres/$DB_HOST/mydb/public/table";
+        let uri = DeltaSqlUri::parse(uri_str).expect("Failed to parse URI");
+
+        match uri {
+            DeltaSqlUri::Postgres(pg) => {
+                assert_eq!(pg.host, "prod-db.example.com");
+            }
+            _ => panic!("Expected PostgreSQL URI"),
+        }
+
+        std::env::remove_var("DB_HOST");
+    }
+
+    #[test]
+    fn test_environment_variable_expansion_sqlite_path() {
+        std::env::set_var("DATA_DIR", "/data/volumes");
+
+        let uri_str = "deltasql://sqlite/$DATA_DIR/metadata.db?table=t";
+        let uri = DeltaSqlUri::parse(uri_str).expect("Failed to parse URI");
+
+        match uri {
+            DeltaSqlUri::Sqlite(sqlite) => {
+                assert_eq!(sqlite.path, "/data/volumes/metadata.db");
+            }
+            _ => panic!("Expected SQLite URI"),
+        }
+
+        std::env::remove_var("DATA_DIR");
+    }
+}
