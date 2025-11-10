@@ -7,8 +7,10 @@
 mod error;
 mod json;
 mod object_store;
+mod service;
 mod worker;
 
 pub use error::MirrorError;
 pub use object_store::{LocalFsObjectStore, ObjectStore};
+pub use service::{AlertSink, LagAlert, LagSeverity, MirrorService};
 pub use worker::{MirrorOutcome, MirrorRunner, MirrorStatus};

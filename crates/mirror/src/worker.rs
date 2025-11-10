@@ -36,9 +36,10 @@ pub enum MirrorStatus {
 }
 
 /// Worker that mirrors committed actions to `_delta_log` JSON files.
+#[derive(Clone)]
 pub struct MirrorRunner<S>
 where
-    S: ObjectStore + 'static,
+    S: ObjectStore + Clone + 'static,
 {
     pool: PgPool,
     store: S,
@@ -46,11 +47,16 @@ where
 
 impl<S> MirrorRunner<S>
 where
-    S: ObjectStore + Send + Sync + 'static,
+    S: ObjectStore + Send + Sync + Clone + 'static,
 {
     /// Creates a new runner from the provided pool and object store implementation.
     pub fn new(pool: PgPool, store: S) -> Self {
         Self { pool, store }
+    }
+
+    /// Returns a clone of the underlying database pool.
+    pub fn pool(&self) -> PgPool {
+        self.pool.clone()
     }
 
     /// Processes at most one pending mirror job.

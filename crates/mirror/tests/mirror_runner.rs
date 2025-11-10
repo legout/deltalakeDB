@@ -1,14 +1,19 @@
 #[path = "../../sql/tests/common.rs"]
 mod schema;
 
-use chrono::Utc;
-use deltalakedb_mirror::{LocalFsObjectStore, MirrorRunner, MirrorStatus, ObjectStore};
+use chrono::{DateTime, Duration, Utc};
+use deltalakedb_mirror::{
+    AlertSink, LagAlert, LagSeverity, LocalFsObjectStore, MirrorRunner, MirrorService,
+    MirrorStatus, ObjectStore,
+};
 use serial_test::serial;
 use sqlx::postgres::PgPoolOptions;
+use std::sync::{Arc, Mutex};
 use tempfile::TempDir;
 use tokio::runtime::Builder;
 use uuid::Uuid;
 
+#[derive(Clone)]
 struct FailStore;
 
 #[async_trait::async_trait]
@@ -22,6 +27,17 @@ impl ObjectStore for FailStore {
         Err(deltalakedb_mirror::MirrorError::ObjectStore(
             "simulated failure".into(),
         ))
+    }
+}
+
+#[derive(Clone, Default)]
+struct RecordingAlertSink {
+    events: Arc<Mutex<Vec<LagAlert>>>,
+}
+
+impl AlertSink for RecordingAlertSink {
+    fn emit(&self, alert: LagAlert) {
+        self.events.lock().unwrap().push(alert);
     }
 }
 
@@ -163,13 +179,22 @@ async fn insert_commit(
     table_id: Uuid,
     version: i64,
 ) -> Result<(), sqlx::Error> {
+    insert_commit_with_time(pool, table_id, version, Utc::now()).await
+}
+
+async fn insert_commit_with_time(
+    pool: &sqlx::PgPool,
+    table_id: Uuid,
+    version: i64,
+    committed_at: DateTime<Utc>,
+) -> Result<(), sqlx::Error> {
     sqlx::query(
         r#"INSERT INTO dl_table_versions(table_id, version, committed_at, committer, operation, operation_params)
             VALUES ($1, $2, $3, 'mirror-test', 'WRITE', $4)"#,
     )
     .bind(table_id)
     .bind(version)
-    .bind(Utc::now())
+    .bind(committed_at)
     .bind(serde_json::json!({"mode": "Append"}))
     .execute(pool)
     .await?;
@@ -234,5 +259,44 @@ async fn insert_mirror_status(
     .bind(status)
     .execute(pool)
     .await?;
+    Ok(())
+}
+
+#[test]
+#[serial]
+fn mirror_lag_alerts_trigger_thresholds() -> Result<(), Box<dyn std::error::Error>> {
+    let dsn = match std::env::var("PG_TEST_DSN") {
+        Ok(value) => value,
+        Err(_) => return Ok(()),
+    };
+
+    let runtime = Builder::new_current_thread().enable_all().build()?;
+    runtime.block_on(async move {
+        let pool = PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&dsn)
+            .await?;
+        schema::reset_catalog(&pool).await?;
+
+        let table_id = Uuid::new_v4();
+        let dir = TempDir::new()?;
+        bootstrap_table(&pool, table_id, dir.path().to_string_lossy().as_ref()).await?;
+        let old_time = Utc::now() - Duration::seconds(400);
+        insert_commit_with_time(&pool, table_id, 0, old_time).await?;
+        insert_add_action(&pool, table_id, 0, "part-000").await?;
+        insert_mirror_status(&pool, table_id, 0, "PENDING").await?;
+
+        let runner = MirrorRunner::new(pool.clone(), LocalFsObjectStore::default());
+        let sink = RecordingAlertSink::default();
+        let service = MirrorService::new(runner, sink.clone()).with_lag_thresholds(60, 300);
+        let alerts = service.check_lag().await?;
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].severity, LagSeverity::Critical);
+        assert!(alerts[0].lag_seconds >= 300);
+        assert_eq!(alerts[0].table_id, table_id);
+
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+
     Ok(())
 }
