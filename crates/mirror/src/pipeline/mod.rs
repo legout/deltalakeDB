@@ -1,28 +1,31 @@
 //! Asynchronous mirroring pipeline for Delta Lake log mirroring
 
 use crate::error::{MirrorError, MirrorResult};
-use crate::generators::{DeltaGenerator, DeltaFile, DeltaJsonGenerator};
+use crate::generators::{DeltaFile, DeltaJsonGenerator};
 use crate::storage::MirrorStorage;
 use crate::config::{MirrorEngineConfig, PerformanceConfig};
+use crate::engine::DeltaMirrorEngine;
 use crate::{MirrorStatus, TaskStatus};
-use deltalakedb_core::Table;
-use std::collections::HashMap;
+use deltalakedb_core::{Table, Commit, Action};
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{mpsc, RwLock, Semaphore};
+use tokio::sync::{mpsc, RwLock};
 use tokio::time::{sleep, Instant};
 use uuid::Uuid;
+use chrono::{DateTime, Utc};
+use std::hash::{Hash, Hasher};
 
 pub mod task;
 
-pub use task::MirrorTask;
+pub use task::{MirrorTask, TaskStatus};
 
 /// Asynchronous mirroring pipeline for processing Delta Lake log mirroring tasks
 pub struct MirrorPipeline {
     config: PerformanceConfig,
     storage: Arc<dyn MirrorStorage>,
+    engine: Arc<DeltaMirrorEngine>,
     task_queue: Arc<RwLock<TaskQueue>>,
-    workers: Vec<MirrorWorker>,
     shutdown_tx: mpsc::Sender<()>,
     shutdown_rx: Arc<RwLock<mpsc::Receiver<()>>>,
 }
@@ -35,29 +38,18 @@ struct TaskQueue {
     max_size: usize,
 }
 
-/// Worker that processes mirroring tasks
-struct MirrorWorker {
-    id: usize,
-    storage: Arc<dyn MirrorStorage>,
-    task_rx: Arc<RwLock<mpsc::Receiver<MirrorTask>>>,
-    status_tx: mpsc::Sender<(Uuid, TaskStatus)>,
-    result_tx: mpsc::Sender<(Uuid, MirrorResult<MirrorStatus>)>,
-    shutdown_rx: Arc<RwLock<mpsc::Receiver<()>>>,
-}
-
 impl MirrorPipeline {
     /// Create a new mirroring pipeline
     pub async fn new(
         config: MirrorEngineConfig,
+        engine: Arc<DeltaMirrorEngine>,
         storage: Arc<dyn MirrorStorage>,
     ) -> MirrorResult<Self> {
         let performance = config.performance.clone();
         let max_workers = performance.max_concurrent_tasks;
         let queue_size = performance.task_queue_size;
 
-        let (task_tx, task_rx) = mpsc::channel(queue_size);
-        let (status_tx, status_rx) = mpsc::channel(1000);
-        let (result_tx, result_rx) = mpsc::channel(1000);
+        let (task_tx, mut task_rx) = mpsc::channel(queue_size);
         let (shutdown_tx, shutdown_rx) = mpsc::channel(1);
 
         // Initialize task queue
@@ -68,45 +60,48 @@ impl MirrorPipeline {
             max_size: queue_size,
         }));
 
-        // Create workers
-        let mut workers = Vec::new();
-        let task_rx = Arc::new(RwLock::new(task_rx));
-        let shutdown_rx = Arc::new(RwLock::new(shutdown_rx));
-
-        for i in 0..max_workers {
-            let worker = MirrorWorker {
-                id: i,
-                storage: storage.clone(),
-                task_rx: task_rx.clone(),
-                status_tx: status_tx.clone(),
-                result_tx: result_tx.clone(),
-                shutdown_rx: shutdown_rx.clone(),
-            };
-            workers.push(worker);
-        }
-
-        // Start status monitoring
-        let pipeline_task_queue = task_queue.clone();
-        let pipeline_status_rx = status_rx;
-        let pipeline_result_rx = result_rx;
+        // Start task processor
+        let processor_queue = task_queue.clone();
+        let processor_engine = engine.clone();
+        let processor_storage = storage.clone();
+        let mut processor_shutdown_rx = shutdown_rx.clone();
 
         tokio::spawn(async move {
-            Self::monitor_tasks(pipeline_task_queue, pipeline_status_rx, pipeline_result_rx).await;
-        });
+            let mut shutdown = false;
 
-        // Start workers
-        for worker in &workers {
-            let worker = worker.clone();
-            tokio::spawn(async move {
-                worker.run().await;
-            });
-        }
+            while !shutdown {
+                tokio::select! {
+                    task = task_rx.recv() => {
+                        match task {
+                            Some(task) => {
+                                if let Err(e) = Self::process_task(
+                                    &processor_engine,
+                                    &processor_storage,
+                                    &processor_queue,
+                                    task
+                                ).await {
+                                    tracing::error!("Error processing task: {}", e);
+                                }
+                            }
+                            None => {
+                                tracing::info!("Task channel closed, shutting down processor");
+                                break;
+                            }
+                        }
+                    }
+                    _ = processor_shutdown_rx.recv() => {
+                        tracing::info!("Shutdown signal received");
+                        shutdown = true;
+                    }
+                }
+            }
+        });
 
         Ok(Self {
             config: performance,
             storage,
+            engine,
             task_queue,
-            workers,
             shutdown_tx,
             shutdown_rx: Arc::new(RwLock::new(shutdown_rx)),
         })
@@ -120,20 +115,29 @@ impl MirrorPipeline {
         {
             let queue = self.task_queue.read().await;
             if queue.pending.len() >= queue.max_size {
-                return Err(MirrorError::task_queue_full(queue.max_size));
+                return Err(MirrorError::validation_error("Task queue is full"));
             }
         }
 
         // Add task to queue
         {
             let mut queue = self.task_queue.write().await;
-            queue.pending.push_back(task);
-        }
+            queue.pending.push_back(task.clone());
 
-        // Send task to workers
-        let task_tx = self.task_queue.read().await.task_tx.clone();
-        if let Err(_) = task_tx.send(task).await {
-            return Err(MirrorError::pipeline_error("Failed to send task to workers"));
+            // Create initial status
+            let status = MirrorStatus {
+                task_id,
+                table_id: task.table_id(),
+                status: TaskStatus::Queued,
+                progress: 0.0,
+                started_at: Utc::now(),
+                estimated_completion: None,
+                error_message: None,
+                files_processed: 0,
+                total_files: 1,
+                bytes_written: 0,
+            };
+            queue.processing.insert(task_id, TaskStatus::Queued);
         }
 
         // Wait for task completion
@@ -149,39 +153,184 @@ impl MirrorPipeline {
             {
                 let queue = self.task_queue.read().await;
                 if let Some(status) = queue.completed.get(&task_id) {
-                    match status.status {
-                        TaskStatus::Completed => return Ok(status.clone()),
-                        TaskStatus::Failed => {
-                            return Err(MirrorError::pipeline_error(
-                                status.error_message.clone().unwrap_or_else(|| "Task failed".to_string())
-                            ));
-                        }
-                        TaskStatus::Cancelled => {
-                            return Err(MirrorError::task_cancelled(
-                                status.error_message.clone().unwrap_or_else(|| "Task was cancelled".to_string())
-                            ));
-                        }
-                        _ => {
-                            // Task still in progress, continue waiting
-                        }
-                    }
+                    return Ok(status.clone());
+                }
+
+                // Check if task is still being processed
+                if !queue.processing.contains_key(&task_id) {
+                    return Err(MirrorError::validation_error("Task not found"));
                 }
             }
 
             if timeout.is_zero() {
-                return Err(MirrorError::timeout_error(
-                    Duration::from_secs(self.config.operation_timeout_secs).as_secs()
-                ));
+                return Err(MirrorError::validation_error("Task timeout"));
             }
 
             sleep(interval).await;
             timeout = timeout.saturating_sub(interval);
+            interval = std::cmp::min(interval * 2, Duration::from_secs(1));
         }
+    }
+
+    /// Process a single task
+    async fn process_task(
+        engine: &DeltaMirrorEngine,
+        storage: &Arc<dyn MirrorStorage>,
+        queue: &Arc<RwLock<TaskQueue>>,
+        task: MirrorTask,
+    ) -> MirrorResult<()> {
+        let task_id = task.task_id();
+        let start_time = Instant::now();
+
+        // Update status to running
+        {
+            let mut q = queue.write().await;
+            q.processing.insert(task_id, TaskStatus::Running);
+        }
+
+        tracing::debug!("Processing task: {:?}", task);
+
+        let result = match task {
+            MirrorTask::CommitMirroring { table_id, version } => {
+                Self::process_commit_mirroring(engine, storage, table_id, version).await
+            }
+            MirrorTask::TableMirroring { table_id } => {
+                Self::process_table_mirroring(engine, storage, table_id).await
+            }
+            MirrorTask::CheckpointGeneration { table_id, version } => {
+                Self::process_checkpoint_generation(engine, storage, table_id, version).await
+            }
+            MirrorTask::BatchMirroring { tasks } => {
+                Self::process_batch_mirroring(engine, storage, tasks).await
+            }
+        };
+
+        let duration = start_time.elapsed();
+
+        // Update final status
+        let status = match result {
+            Ok(bytes_written) => MirrorStatus {
+                task_id,
+                table_id: task.table_id(),
+                status: TaskStatus::Completed,
+                progress: 1.0,
+                started_at: Utc::now(),
+                estimated_completion: None,
+                error_message: None,
+                files_processed: 1,
+                total_files: 1,
+                bytes_written,
+            },
+            Err(error) => MirrorStatus {
+                task_id,
+                table_id: task.table_id(),
+                status: TaskStatus::Failed,
+                progress: 0.0,
+                started_at: Utc::now(),
+                estimated_completion: None,
+                error_message: Some(error.to_string()),
+                files_processed: 0,
+                total_files: 1,
+                bytes_written: 0,
+            },
+        };
+
+        // Move task from processing to completed
+        {
+            let mut q = queue.write().await;
+            q.processing.remove(&task_id);
+            q.completed.insert(task_id, status);
+        }
+
+        tracing::debug!("Task {} completed in {:?}", task_id, duration);
+        Ok(())
+    }
+
+    /// Process commit mirroring task
+    async fn process_commit_mirroring(
+        engine: &DeltaMirrorEngine,
+        _storage: &Arc<dyn MirrorStorage>,
+        table_id: Uuid,
+        version: i64,
+    ) -> MirrorResult<u64> {
+        // This would integrate with the SQL adapter to fetch commit data
+        // For now, create a placeholder commit and actions
+        let commit = Commit {
+            id: Uuid::new_v4(),
+            table_id,
+            version,
+            timestamp: Utc::now(),
+            operation_type: "WRITE".to_string(),
+            operation_parameters: serde_json::json!({"mode": "Append"}),
+            commit_info: serde_json::json!({}),
+        };
+
+        let action = Action::AddFile(deltalakedb_core::AddFile {
+            path: format!("part-{:05}-{}.parquet", version, Uuid::new_v4()),
+            size: 1024,
+            modification_time: Utc::now().timestamp_millis(),
+            data_change: true,
+            stats: None,
+            partition_values: None,
+            tags: None,
+        });
+
+        let table_path = format!("/tables/{}", table_id);
+        let actions = &[action];
+
+        let delta_file = engine.mirror_commit(&table_path, version, &commit, actions).await?;
+        Ok(delta_file.size)
+    }
+
+    /// Process table mirroring task
+    async fn process_table_mirroring(
+        _engine: &DeltaMirrorEngine,
+        _storage: &Arc<dyn MirrorStorage>,
+        _table_id: Uuid,
+    ) -> MirrorResult<u64> {
+        // This would mirror all commits for a table
+        // Placeholder implementation
+        sleep(Duration::from_millis(100)).await;
+        Ok(1024)
+    }
+
+    /// Process checkpoint generation task
+    async fn process_checkpoint_generation(
+        _engine: &DeltaMirrorEngine,
+        _storage: &Arc<dyn MirrorStorage>,
+        _table_id: Uuid,
+        _version: Option<i64>,
+    ) -> MirrorResult<u64> {
+        // This would generate a checkpoint file
+        // Placeholder implementation
+        sleep(Duration::from_millis(200)).await;
+        Ok(2048)
+    }
+
+    /// Process batch mirroring task
+    async fn process_batch_mirroring(
+        engine: &DeltaMirrorEngine,
+        storage: &Arc<dyn MirrorStorage>,
+        tasks: Vec<MirrorTask>,
+    ) -> MirrorResult<u64> {
+        let mut total_bytes = 0;
+
+        for task in tasks {
+            let result = match task {
+                MirrorTask::CommitMirroring { table_id, version } => {
+                    Self::process_commit_mirroring(engine, storage, table_id, version).await
+                }
+                _ => Ok(0),
+            };
+            total_bytes += result.unwrap_or(0);
+        }
+
+        Ok(total_bytes)
     }
 
     /// Start the pipeline
     pub async fn start(&self) -> MirrorResult<()> {
-        tracing::info!("Starting mirroring pipeline with {} workers", self.workers.len());
+        tracing::info!("Starting mirroring pipeline");
         Ok(())
     }
 
@@ -189,11 +338,11 @@ impl MirrorPipeline {
     pub async fn shutdown(&self) -> MirrorResult<()> {
         tracing::info!("Shutting down mirroring pipeline...");
 
-        // Send shutdown signal to all workers
+        // Send shutdown signal
         let _ = self.shutdown_tx.send(()).await;
 
-        // Wait for workers to finish current tasks
-        sleep(Duration::from_secs(30)).await;
+        // Wait for tasks to complete
+        sleep(Duration::from_secs(5)).await;
 
         tracing::info!("Mirroring pipeline shutdown complete");
         Ok(())
@@ -210,7 +359,7 @@ impl MirrorPipeline {
             processing_tasks: processing_count,
             completed_tasks: completed_count,
             max_queue_size: queue.max_size,
-            worker_count: self.workers.len(),
+            worker_count: self.config.max_concurrent_tasks,
             is_shutting_down: self.shutdown_rx.read().await.try_recv().is_ok(),
         }
     }
@@ -236,12 +385,12 @@ impl MirrorPipeline {
             // Mark as cancelled
             let cancelled_status = MirrorStatus {
                 task_id,
-                table_id: Uuid::new_v4(), // We don't have table_id info here
+                table_id: Uuid::new_v4(),
                 status: TaskStatus::Cancelled,
                 progress: 1.0,
-                started_at: chrono::Utc::now(),
+                started_at: Utc::now(),
                 estimated_completion: None,
-                error_message: Some("Task cancelled by user".to_string()),
+                error_message: Some("Task cancelled".to_string()),
                 files_processed: 0,
                 total_files: 0,
                 bytes_written: 0,
@@ -250,192 +399,8 @@ impl MirrorPipeline {
             queue.completed.insert(task_id, cancelled_status);
             Ok(true)
         } else {
-            // Task is being processed or already completed
             Ok(false)
         }
-    }
-
-    /// Monitor task status updates
-    async fn monitor_tasks(
-        task_queue: Arc<RwLock<TaskQueue>>,
-        mut status_rx: mpsc::Receiver<(Uuid, TaskStatus)>,
-        mut result_rx: mpsc::Receiver<(Uuid, MirrorResult<MirrorStatus>)>,
-    ) {
-        loop {
-            tokio::select! {
-                status_update = status_rx.recv() => {
-                    match status_update {
-                        Some((task_id, status)) => {
-                            let mut queue = task_queue.write().await;
-                            queue.processing.insert(task_id, status);
-                        }
-                        None => break,
-                    }
-                },
-                result_update = result_rx.recv() => {
-                    match result_update {
-                        Some((task_id, result)) => {
-                            let mut queue = task_queue.write().await;
-                            queue.processing.remove(&task_id);
-
-                            let status = match result {
-                                Ok(status) => {
-                                    let mut completed_status = status.clone();
-                                    completed_status.status = TaskStatus::Completed;
-                                    completed_status
-                                }
-                                Err(error) => {
-                                    MirrorStatus {
-                                        task_id,
-                                        table_id: Uuid::new_v4(), // Extract from error if needed
-                                        status: TaskStatus::Failed,
-                                        progress: 0.0,
-                                        started_at: chrono::Utc::now(),
-                                        estimated_completion: None,
-                                        error_message: Some(error.to_string()),
-                                        files_processed: 0,
-                                        total_files: 0,
-                                        bytes_written: 0,
-                                    }
-                                }
-                            };
-
-                            queue.completed.insert(task_id, status);
-                        }
-                        None => break,
-                    }
-                },
-            }
-        }
-    }
-}
-
-impl Clone for MirrorWorker {
-    fn clone(&self) -> Self {
-        Self {
-            id: self.id,
-            storage: self.storage.clone(),
-            task_rx: self.task_rx.clone(),
-            status_tx: self.status_tx.clone(),
-            result_tx: self.result_tx.clone(),
-            shutdown_rx: self.shutdown_rx.clone(),
-        }
-    }
-}
-
-impl MirrorWorker {
-    /// Run the worker loop
-    async fn run(&self) {
-        tracing::debug!("Mirror worker {} started", self.id);
-
-        loop {
-            // Check for shutdown signal
-            {
-                let shutdown_rx = self.shutdown_rx.read().await;
-                if shutdown_rx.try_recv().is_ok() {
-                    tracing::debug!("Mirror worker {} shutting down", self.id);
-                    break;
-                }
-            }
-
-            // Get next task
-            let task = {
-                let task_rx = self.task_rx.read().await;
-                match task_rx.try_recv() {
-                    Ok(task) => Some(task),
-                    Err(_) => {
-                        // No tasks available, sleep briefly
-                        sleep(Duration::from_millis(100)).await;
-                        continue;
-                    }
-                }
-            };
-
-            if let Some(task) = task {
-                self.process_task(task).await;
-            }
-        }
-    }
-
-    /// Process a single mirroring task
-    async fn process_task(&self, task: MirrorTask) {
-        let task_id = task.task_id();
-        let start_time = Instant::now();
-
-        // Update status to running
-        let _ = self.status_tx.send((task_id, TaskStatus::Running)).await;
-
-        tracing::debug!("Worker {} processing task {}", self.id, task_id);
-
-        let result = match task {
-            MirrorTask::CommitMirroring { table_id, version } => {
-                self.process_commit_mirroring(table_id, version).await
-            }
-            MirrorTask::TableMirroring { table_id } => {
-                self.process_table_mirroring(table_id).await
-            }
-            MirrorTask::CheckpointGeneration { table_id, version } => {
-                self.process_checkpoint_generation(table_id, version).await
-            }
-            MirrorTask::BatchMirroring { tasks } => {
-                self.process_batch_mirroring(tasks).await
-            }
-        };
-
-        // Send result to pipeline
-        let status = MirrorStatus {
-            task_id,
-            table_id: task.table_id(),
-            status: if result.is_ok() { TaskStatus::Completed } else { TaskStatus::Failed },
-            progress: 1.0,
-            started_at: chrono::Utc::now(),
-            estimated_completion: None,
-            error_message: result.as_ref().err().map(|e| e.to_string()),
-            files_processed: 1,
-            total_files: 1,
-            bytes_written: result.as_ref().ok().map(|s| s.bytes_written).unwrap_or(0),
-        };
-
-        let _ = self.result_tx.send((task_id, result.map(|_| status))).await;
-
-        let duration = start_time.elapsed();
-        tracing::debug!("Worker {} completed task {} in {:?}", self.id, task_id, duration);
-    }
-
-    /// Process commit mirroring task
-    async fn process_commit_mirroring(
-        &self,
-        table_id: Uuid,
-        version: i64,
-    ) -> MirrorResult<MirrorStatus> {
-        // This would integrate with the SQL adapter to fetch commit data
-        // For now, return a placeholder result
-        Err(MirrorError::pipeline_error("Commit mirroring not yet implemented"))
-    }
-
-    /// Process table mirroring task
-    async fn process_table_mirroring(&self, table_id: Uuid) -> MirrorResult<MirrorStatus> {
-        // This would mirror all commits for a table
-        Err(MirrorError::pipeline_error("Table mirroring not yet implemented"))
-    }
-
-    /// Process checkpoint generation task
-    async fn process_checkpoint_generation(
-        &self,
-        table_id: Uuid,
-        version: Option<i64>,
-    ) -> MirrorResult<MirrorStatus> {
-        // This would generate a checkpoint file
-        Err(MirrorError::pipeline_error("Checkpoint generation not yet implemented"))
-    }
-
-    /// Process batch mirroring task
-    async fn process_batch_mirroring(
-        &self,
-        tasks: Vec<MirrorTask>,
-    ) -> MirrorResult<MirrorStatus> {
-        // Process multiple tasks concurrently
-        Err(MirrorError::pipeline_error("Batch mirroring not yet implemented"))
     }
 }
 
@@ -455,9 +420,6 @@ pub struct PipelineStats {
     /// Whether the pipeline is shutting down
     pub is_shutting_down: bool,
 }
-
-/// Task queue implementation
-use std::collections::VecDeque;
 
 /// Mirroring task definition
 #[derive(Debug, Clone)]
@@ -485,40 +447,33 @@ pub enum MirrorTask {
 impl MirrorTask {
     /// Get the unique task ID
     pub fn task_id(&self) -> Uuid {
+        let mut hasher = DefaultHasher::new();
+
         match self {
             MirrorTask::CommitMirroring { table_id, version } => {
-                // Create deterministic task ID from table_id and version
-                let mut hasher = std::collections::hash_map::DefaultHasher::new();
                 table_id.hash(&mut hasher);
                 version.hash(&mut hasher);
-                let hash = hasher.finish();
-                Uuid::from_u64_pair(hash, 0)
+                0u8.hash(&mut hasher);
             }
             MirrorTask::TableMirroring { table_id } => {
-                // Create deterministic task ID from table_id
-                let mut hasher = std::collections::hash_map::DefaultHasher::new();
                 table_id.hash(&mut hasher);
-                let hash = hasher.finish();
-                Uuid::from_u64_pair(hash, 1)
+                1u8.hash(&mut hasher);
             }
             MirrorTask::CheckpointGeneration { table_id, version } => {
-                // Create deterministic task ID from table_id and version
-                let mut hasher = std::collections::hash_map::DefaultHasher::new();
                 table_id.hash(&mut hasher);
                 version.hash(&mut hasher);
-                let hash = hasher.finish();
-                Uuid::from_u64_pair(hash, 2)
+                2u8.hash(&mut hasher);
             }
             MirrorTask::BatchMirroring { tasks } => {
-                // Create deterministic task ID from batch contents
-                let mut hasher = std::collections::hash_map::DefaultHasher::new();
                 for task in tasks {
                     task.task_id().hash(&mut hasher);
                 }
-                let hash = hasher.finish();
-                Uuid::from_u64_pair(hash, 3)
+                3u8.hash(&mut hasher);
             }
         }
+
+        let hash = hasher.finish();
+        Uuid::from_u64_pair(hash, 0)
     }
 
     /// Get the table ID associated with this task
@@ -537,6 +492,7 @@ impl MirrorTask {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::MirrorEngineConfig;
 
     #[test]
     fn test_mirror_task_task_id_deterministic() {

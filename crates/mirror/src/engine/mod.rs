@@ -1,7 +1,7 @@
 //! Core Delta Mirror engine for orchestrating log mirroring operations
 
 use crate::error::{MirrorError, MirrorResult};
-use crate::generators::{DeltaGenerator, DeltaFile, DeltaJsonGenerator};
+use crate::generators::{DeltaGenerator, DeltaFile, DeltaJsonGenerator, DeltaParquetGenerator};
 use crate::pipeline::{MirrorPipeline, MirrorTask};
 use crate::storage::MirrorStorage;
 use crate::config::MirrorEngineConfig;
@@ -15,6 +15,7 @@ pub struct DeltaMirrorEngine {
     config: MirrorEngineConfig,
     storage: Arc<dyn MirrorStorage>,
     json_generator: DeltaJsonGenerator,
+    parquet_generator: DeltaParquetGenerator,
 }
 
 impl DeltaMirrorEngine {
@@ -24,11 +25,13 @@ impl DeltaMirrorEngine {
         storage: Arc<dyn MirrorStorage>,
     ) -> MirrorResult<Self> {
         let json_generator = DeltaJsonGenerator::with_options(config.json_generation.clone());
+        let parquet_generator = DeltaParquetGenerator::with_options(config.json_generation.clone());
 
         Ok(Self {
             config,
             storage,
             json_generator,
+            parquet_generator,
         })
     }
 
@@ -110,6 +113,57 @@ impl DeltaMirrorEngine {
         );
 
         Ok(delta_file)
+    }
+
+    /// Generate Delta checkpoint file
+    pub async fn generate_checkpoint_file(
+        &self,
+        table_path: &str,
+        version: i64,
+        actions: &[Action],
+    ) -> MirrorResult<DeltaFile> {
+        // Check if checkpoint should be generated based on configuration
+        let should_generate = self.should_generate_checkpoint(version, actions)?;
+
+        if !should_generate {
+            return Err(MirrorError::validation_error(
+                "Checkpoint generation conditions not met".to_string()
+            ));
+        }
+
+        let delta_file = self.parquet_generator
+            .generate_checkpoint_file(table_path, version, actions)?;
+
+        self.storage.put_delta_file(table_path, &delta_file).await?;
+
+        tracing::info!(
+            "Generated checkpoint file {} for table {} (size: {} bytes)",
+            delta_file.file_name,
+            table_path,
+            delta_file.size
+        );
+
+        Ok(delta_file)
+    }
+
+    /// Determine if checkpoint should be generated
+    fn should_generate_checkpoint(&self, version: i64, actions: &[Action]) -> MirrorResult<bool> {
+        // Check if version is divisible by checkpoint interval
+        let checkpoint_interval = self.config.performance.checkpoint_interval.unwrap_or(10);
+
+        if version % checkpoint_interval != 0 {
+            return Ok(false);
+        }
+
+        // Check if we have enough actions to warrant a checkpoint
+        let min_actions_for_checkpoint = self.config.performance.min_actions_for_checkpoint.unwrap_or(5);
+        if actions.len() < min_actions_for_checkpoint {
+            return Ok(false);
+        }
+
+        // Check if enough time has passed since last checkpoint
+        // For now, we'll just use version-based logic
+        Ok(true)
     }
 
     /// Validate commit inputs before mirroring

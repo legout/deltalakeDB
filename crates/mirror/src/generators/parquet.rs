@@ -34,25 +34,76 @@ impl DeltaParquetGenerator {
         version: i64,
         actions: &[Action],
     ) -> MirrorResult<DeltaFile> {
-        // For now, this is a placeholder implementation
-        // In a full implementation, this would use the parquet crate to generate
-        // properly structured checkpoint files with schemas and statistics
+        use arrow::{
+            datatypes::{Schema, Field, DataType, Int64Type, StringType, BooleanType},
+            record_batch::RecordBatch,
+            array::{StringArray, Int64Array, BooleanArray, StructArray},
+        };
+        use parquet::arrow::{ArrowWriter, arrow_reader::ParquetRecordBatchReaderBuilder};
+        use parquet::file::properties::{WriterProperties, WriterVersion};
+        use parquet::basic::Compression;
+        use std::sync::Arc;
+        use std::io::Cursor;
 
-        // Create a simple JSON representation as placeholder
-        let checkpoint_data = json!({
-            "version": version,
-            "actions": actions.len(),
-            "table_path": table_path,
-            "generated_at": chrono::Utc::now().to_rfc3339()
-        });
+        // Convert actions to Arrow record batches
+        let record_batches = self.actions_to_record_batches(actions)?;
 
-        let json_str = serde_json::to_string(&checkpoint_data)
+        if record_batches.is_empty() {
+            return Err(MirrorError::parquet_generation_error(
+                "No actions to generate checkpoint".to_string()
+            ));
+        }
+
+        // Create unified schema from first batch (or create empty schema)
+        let schema = if !record_batches.is_empty() {
+            record_batches[0].schema()
+        } else {
+            Arc::new(Schema::empty())
+        };
+
+        // Configure writer properties
+        let compression = if let Some(comp_str) = &self.options.compression_algorithm {
+            match comp_str.to_lowercase().as_str() {
+                "snappy" => Compression::SNAPPY,
+                "gzip" => Compression::GZIP,
+                "brotli" => Compression::BROTLI,
+                "lz4" => Compression::LZ4,
+                "zstd" => Compression::ZSTD,
+                _ => Compression::SNAPPY,
+            }
+        } else {
+            Compression::SNAPPY
+        };
+
+        let row_group_size = self.options.max_batch_size.unwrap_or(1024);
+
+        let writer_props = WriterProperties::builder()
+            .set_compression(compression)
+            .set_writer_version(WriterVersion::PARQUET_2_0)
+            .set_max_row_group_size(row_group_size)
+            .build();
+
+        // Write to in-memory buffer
+        let mut buffer = Vec::new();
+        let mut writer = ArrowWriter::try_new(&mut buffer, schema.clone(), Some(writer_props))
             .map_err(|e| MirrorError::parquet_generation_error(
-                format!("Failed to serialize checkpoint data: {}", e)
+                format!("Failed to create Parquet writer: {}", e)
+            ))?;
+
+        // Write record batches
+        for batch in record_batches {
+            writer.write(&batch)
+                .map_err(|e| MirrorError::parquet_generation_error(
+                    format!("Failed to write batch: {}", e)
+                ))?;
+        }
+
+        writer.close()
+            .map_err(|e| MirrorError::parquet_generation_error(
+                format!("Failed to close Parquet writer: {}", e)
             ))?;
 
         let file_name = checkpoint_file_name(version);
-        let content = json_str.into_bytes();
 
         let mut metadata = HashMap::new();
         metadata.insert("table_path".to_string(), table_path.to_string());
@@ -61,13 +112,293 @@ impl DeltaParquetGenerator {
         metadata.insert("type".to_string(), "checkpoint".to_string());
         metadata.insert("format".to_string(), "parquet".to_string());
         metadata.insert("generated_at".to_string(), chrono::Utc::now().to_rfc3339());
+        metadata.insert("compression".to_string(), format!("{:?}", compression));
+        metadata.insert("row_group_size".to_string(), row_group_size.to_string());
 
         Ok(DeltaFile::with_metadata(
             DeltaFormat::Parquet,
             file_name,
-            content,
+            buffer,
             metadata,
         ))
+    }
+
+    /// Convert actions to Arrow record batches
+    fn actions_to_record_batches(&self, actions: &[Action]) -> MirrorResult<Vec<RecordBatch>> {
+        use arrow::{
+            datatypes::{Schema, Field, DataType},
+            record_batch::RecordBatch,
+            array::{StringArray, Int64Array, BooleanArray, StructArray, Array},
+        };
+        use std::sync::Arc;
+
+        let mut add_file_records = Vec::new();
+        let mut remove_file_records = Vec::new();
+        let mut metadata_records = Vec::new();
+        let mut protocol_records = Vec::new();
+
+        for action in actions {
+            match action {
+                Action::AddFile(add_file) => {
+                    add_file_records.push(self.create_add_file_record(add_file)?);
+                }
+                Action::RemoveFile(remove_file) => {
+                    remove_file_records.push(self.create_remove_file_record(remove_file)?);
+                }
+                Action::Metadata(metadata) => {
+                    metadata_records.push(self.create_metadata_record(metadata)?);
+                }
+            }
+        }
+
+        let mut batches = Vec::new();
+
+        // Create AddFile batch
+        if !add_file_records.is_empty() {
+            let schema = self.create_add_file_schema()?;
+            let batch = RecordBatch::try_new(Arc::new(schema), add_file_records)
+                .map_err(|e| MirrorError::parquet_generation_error(
+                    format!("Failed to create AddFile batch: {}", e)
+                ))?;
+            batches.push(batch);
+        }
+
+        // Create RemoveFile batch
+        if !remove_file_records.is_empty() {
+            let schema = self.create_remove_file_schema()?;
+            let batch = RecordBatch::try_new(Arc::new(schema), remove_file_records)
+                .map_err(|e| MirrorError::parquet_generation_error(
+                    format!("Failed to create RemoveFile batch: {}", e)
+                ))?;
+            batches.push(batch);
+        }
+
+        // Create Metadata batch
+        if !metadata_records.is_empty() {
+            let schema = self.create_metadata_schema()?;
+            let batch = RecordBatch::try_new(Arc::new(schema), metadata_records)
+                .map_err(|e| MirrorError::parquet_generation_error(
+                    format!("Failed to create Metadata batch: {}", e)
+                ))?;
+            batches.push(batch);
+        }
+
+        // Create Protocol batch if needed (placeholder)
+        if !protocol_records.is_empty() {
+            let schema = self.create_protocol_schema()?;
+            let batch = RecordBatch::try_new(Arc::new(schema), protocol_records)
+                .map_err(|e| MirrorError::parquet_generation_error(
+                    format!("Failed to create Protocol batch: {}", e)
+                ))?;
+            batches.push(batch);
+        }
+
+        Ok(batches)
+    }
+
+    /// Create AddFile schema
+    fn create_add_file_schema(&self) -> MirrorResult<Schema> {
+        use arrow::datatypes::{Schema, Field, DataType};
+
+        let fields = vec![
+            Field::new("path", DataType::Utf8, false),
+            Field::new("size", DataType::Int64, false),
+            Field::new("modification_time", DataType::Int64, false),
+            Field::new("data_change", DataType::Boolean, false),
+            Field::new("stats", DataType::Utf8, true),
+            Field::new("partition_values", DataType::Utf8, true), // Simplified as JSON string
+        ];
+
+        Ok(Schema::new(fields))
+    }
+
+    /// Create RemoveFile schema
+    fn create_remove_file_schema(&self) -> MirrorResult<Schema> {
+        use arrow::datatypes::{Schema, Field, DataType};
+
+        let fields = vec![
+            Field::new("path", DataType::Utf8, false),
+            Field::new("deletion_timestamp", DataType::Int64, false),
+            Field::new("data_change", DataType::Boolean, false),
+            Field::new("extended_file_metadata", DataType::Boolean, true),
+        ];
+
+        Ok(Schema::new(fields))
+    }
+
+    /// Create Metadata schema
+    fn create_metadata_schema(&self) -> MirrorResult<Schema> {
+        use arrow::datatypes::{Schema, Field, DataType};
+
+        let fields = vec![
+            Field::new("id", DataType::Utf8, false),
+            Field::new("name", DataType::Utf8, true),
+            Field::new("description", DataType::Utf8, true),
+            Field::new("format", DataType::Utf8, false), // Simplified as JSON string
+            Field::new("schema_string", DataType::Utf8, false),
+            Field::new("partition_columns", DataType::Utf8, true), // Simplified as JSON string
+            Field::new("configuration", DataType::Utf8, true), // Simplified as JSON string
+            Field::new("created_time", DataType::Int64, false),
+        ];
+
+        Ok(Schema::new(fields))
+    }
+
+    /// Create Protocol schema (placeholder)
+    fn create_protocol_schema(&self) -> MirrorResult<Schema> {
+        use arrow::datatypes::{Schema, Field, DataType};
+
+        let fields = vec![
+            Field::new("min_reader_version", DataType::Int64, false),
+            Field::new("min_writer_version", DataType::Int64, false),
+        ];
+
+        Ok(Schema::new(fields))
+    }
+
+    /// Create AddFile record
+    fn create_add_file_record(&self, add_file: &AddFile) -> MirrorResult<Arc<dyn Array>> {
+        use arrow::array::{StringArray, Int64Array, BooleanArray, StructArray};
+        use std::sync::Arc;
+
+        let path_array = StringArray::from(vec![add_file.path.as_str()]);
+        let size_array = Int64Array::from(vec![add_file.size]);
+        let modification_time_array = Int64Array::from(vec![add_file.modification_time]);
+        let data_change_array = BooleanArray::from(vec![add_file.data_change]);
+
+        let stats_json = add_file.stats.as_ref().cloned().unwrap_or_default();
+        let stats_array = StringArray::from(vec![stats_json.as_str()]);
+
+        let partition_values_json = add_file.partition_values.as_ref()
+            .map(|pv| serde_json::to_string(pv).unwrap_or_default())
+            .unwrap_or_default();
+        let partition_values_array = StringArray::from(vec![partition_values_json.as_str()]);
+
+        let struct_array = StructArray::try_new(
+            vec![
+                Arc::new(Field::new("path", arrow::datatypes::DataType::Utf8, false)),
+                Arc::new(Field::new("size", arrow::datatypes::DataType::Int64, false)),
+                Arc::new(Field::new("modification_time", arrow::datatypes::DataType::Int64, false)),
+                Arc::new(Field::new("data_change", arrow::datatypes::DataType::Boolean, false)),
+                Arc::new(Field::new("stats", arrow::datatypes::DataType::Utf8, true)),
+                Arc::new(Field::new("partition_values", arrow::datatypes::DataType::Utf8, true)),
+            ].into(),
+            vec![
+                Arc::new(path_array) as Arc<dyn Array>,
+                Arc::new(size_array) as Arc<dyn Array>,
+                Arc::new(modification_time_array) as Arc<dyn Array>,
+                Arc::new(data_change_array) as Arc<dyn Array>,
+                Arc::new(stats_array) as Arc<dyn Array>,
+                Arc::new(partition_values_array) as Arc<dyn Array>,
+            ],
+            None,
+        ).map_err(|e| MirrorError::parquet_generation_error(
+            format!("Failed to create AddFile struct: {}", e)
+        ))?;
+
+        Ok(Arc::new(struct_array))
+    }
+
+    /// Create RemoveFile record
+    fn create_remove_file_record(&self, remove_file: &RemoveFile) -> MirrorResult<Arc<dyn Array>> {
+        use arrow::array::{StringArray, Int64Array, BooleanArray, StructArray};
+        use std::sync::Arc;
+
+        let path_array = StringArray::from(vec![remove_file.path.as_str()]);
+        let deletion_timestamp_array = Int64Array::from(vec![remove_file.deletion_timestamp]);
+        let data_change_array = BooleanArray::from(vec![remove_file.data_change]);
+        let extended_file_metadata_array = BooleanArray::from(vec![
+            remove_file.extended_file_metadata.unwrap_or(false)
+        ]);
+
+        let struct_array = StructArray::try_new(
+            vec![
+                Arc::new(Field::new("path", arrow::datatypes::DataType::Utf8, false)),
+                Arc::new(Field::new("deletion_timestamp", arrow::datatypes::DataType::Int64, false)),
+                Arc::new(Field::new("data_change", arrow::datatypes::DataType::Boolean, false)),
+                Arc::new(Field::new("extended_file_metadata", arrow::datatypes::DataType::Boolean, true)),
+            ].into(),
+            vec![
+                Arc::new(path_array) as Arc<dyn Array>,
+                Arc::new(deletion_timestamp_array) as Arc<dyn Array>,
+                Arc::new(data_change_array) as Arc<dyn Array>,
+                Arc::new(extended_file_metadata_array) as Arc<dyn Array>,
+            ],
+            None,
+        ).map_err(|e| MirrorError::parquet_generation_error(
+            format!("Failed to create RemoveFile struct: {}", e)
+        ))?;
+
+        Ok(Arc::new(struct_array))
+    }
+
+    /// Create Metadata record
+    fn create_metadata_record(&self, metadata: &Value) -> MirrorResult<Arc<dyn Array>> {
+        use arrow::array::{StringArray, Int64Array, StructArray};
+        use std::sync::Arc;
+
+        // Extract metadata fields
+        let id = metadata.get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let name = metadata.get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let description = metadata.get("description")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let format_json = metadata.get("format")
+            .map(|v| serde_json::to_string(v).unwrap_or_default())
+            .unwrap_or_default();
+        let schema_string = metadata.get("schemaString")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let partition_columns_json = metadata.get("partitionColumns")
+            .map(|v| serde_json::to_string(v).unwrap_or_default())
+            .unwrap_or_default();
+        let configuration_json = metadata.get("configuration")
+            .map(|v| serde_json::to_string(v).unwrap_or_default())
+            .unwrap_or_default();
+        let created_time = metadata.get("createdTime")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+
+        let id_array = StringArray::from(vec![id]);
+        let name_array = StringArray::from(vec![name]);
+        let description_array = StringArray::from(vec![description]);
+        let format_array = StringArray::from(vec![format_json.as_str()]);
+        let schema_string_array = StringArray::from(vec![schema_string]);
+        let partition_columns_array = StringArray::from(vec![partition_columns_json.as_str()]);
+        let configuration_array = StringArray::from(vec![configuration_json.as_str()]);
+        let created_time_array = Int64Array::from(vec![created_time]);
+
+        let struct_array = StructArray::try_new(
+            vec![
+                Arc::new(Field::new("id", arrow::datatypes::DataType::Utf8, false)),
+                Arc::new(Field::new("name", arrow::datatypes::DataType::Utf8, true)),
+                Arc::new(Field::new("description", arrow::datatypes::DataType::Utf8, true)),
+                Arc::new(Field::new("format", arrow::datatypes::DataType::Utf8, false)),
+                Arc::new(Field::new("schema_string", arrow::datatypes::DataType::Utf8, false)),
+                Arc::new(Field::new("partition_columns", arrow::datatypes::DataType::Utf8, true)),
+                Arc::new(Field::new("configuration", arrow::datatypes::DataType::Utf8, true)),
+                Arc::new(Field::new("created_time", arrow::datatypes::DataType::Int64, false)),
+            ].into(),
+            vec![
+                Arc::new(id_array) as Arc<dyn Array>,
+                Arc::new(name_array) as Arc<dyn Array>,
+                Arc::new(description_array) as Arc<dyn Array>,
+                Arc::new(format_array) as Arc<dyn Array>,
+                Arc::new(schema_string_array) as Arc<dyn Array>,
+                Arc::new(partition_columns_array) as Arc<dyn Array>,
+                Arc::new(configuration_array) as Arc<dyn Array>,
+                Arc::new(created_time_array) as Arc<dyn Array>,
+            ],
+            None,
+        ).map_err(|e| MirrorError::parquet_generation_error(
+            format!("Failed to create Metadata struct: {}", e)
+        ))?;
+
+        Ok(Arc::new(struct_array))
     }
 
     /// Convert actions to checkpoint format

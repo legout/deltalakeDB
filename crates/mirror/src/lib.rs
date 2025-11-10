@@ -274,6 +274,16 @@ pub struct PerformanceConfig {
     pub batch_size: usize,
     /// Whether to enable compression for output files
     pub compression_enabled: bool,
+    /// Checkpoint generation interval (every N versions)
+    pub checkpoint_interval: Option<u64>,
+    /// Minimum number of actions required for checkpoint generation
+    pub min_actions_for_checkpoint: Option<usize>,
+    /// Maximum checkpoint file size in bytes
+    pub max_checkpoint_size_bytes: Option<usize>,
+    /// Row group size for Parquet files
+    pub parquet_row_group_size: Option<usize>,
+    /// Parquet compression algorithm
+    pub parquet_compression: Option<String>,
 }
 
 /// Storage backend type
@@ -377,6 +387,11 @@ impl Default for PerformanceConfig {
             operation_timeout_secs: 300,
             batch_size: 100,
             compression_enabled: true,
+            checkpoint_interval: Some(10),
+            min_actions_for_checkpoint: Some(5),
+            max_checkpoint_size_bytes: Some(1024 * 1024 * 100), // 100MB
+            parquet_row_group_size: Some(1024),
+            parquet_compression: Some("snappy".to_string()),
         }
     }
 }

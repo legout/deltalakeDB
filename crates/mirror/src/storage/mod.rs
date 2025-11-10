@@ -548,6 +548,28 @@ impl Default for StorageConfig {
     }
 }
 
+/// Create a test storage instance for testing
+#[cfg(test)]
+pub async fn create_test_storage() -> MirrorResult<Arc<dyn MirrorStorage>> {
+    let config = StorageConfig {
+        backend: StorageBackend::Local,
+        s3_config: None,
+        azure_config: None,
+        gcs_config: None,
+        local_config: Some(LocalConfig {
+            base_dir: std::env::temp_dir().join("deltalakedb_test"),
+            create_dirs: true,
+            file_permissions: Some(0o644),
+            dir_permissions: Some(0o755),
+        }),
+        timeout_secs: 30,
+        max_retries: 3,
+        enable_signing: false,
+    };
+
+    create_storage(&config)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
