@@ -32,10 +32,12 @@
 
 #![warn(missing_docs)]
 
+pub mod checkpoint;
 pub mod engine;
 pub mod error;
 pub mod serializer;
 
+pub use checkpoint::CheckpointWriter;
 pub use engine::MirrorEngine;
 pub use error::{MirrorError, MirrorResult};
 

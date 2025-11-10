@@ -3,6 +3,7 @@
 //! Coordinates the mirroring of committed SQL versions to canonical `_delta_log` artifacts
 //! (JSON commits and Parquet checkpoints) for Delta Lake ecosystem compatibility.
 
+use crate::checkpoint::CheckpointWriter;
 use crate::error::{MirrorError, MirrorResult};
 use crate::serializer::serialize_actions;
 use bytes::Bytes;
@@ -10,7 +11,6 @@ use deltalakedb_core::types::{Action, Snapshot};
 use object_store::ObjectStore;
 use std::sync::Arc;
 use tracing::{debug, info, warn};
-use uuid::Uuid;
 
 /// Mirror engine that writes Delta artifacts to object storage.
 ///
@@ -54,6 +54,7 @@ impl MirrorEngine {
     /// * `table_location` - Table's object storage location (e.g., `s3://bucket/path`)
     /// * `version` - Version number to mirror
     /// * `actions` - Actions committed in this version
+    /// * `snapshot` - Table snapshot (for checkpoint generation)
     ///
     /// # Returns
     ///
@@ -68,6 +69,7 @@ impl MirrorEngine {
         table_location: &str,
         version: i64,
         actions: &[Action],
+        snapshot: &Snapshot,
     ) -> MirrorResult<()> {
         info!("Mirroring version {} to {}", version, table_location);
 
@@ -76,7 +78,7 @@ impl MirrorEngine {
 
         // Generate checkpoint if interval reached
         if self.should_checkpoint(version) {
-            match self.write_checkpoint(table_location, version).await {
+            match self.write_checkpoint(table_location, version, snapshot).await {
                 Ok(_) => info!("Checkpoint written for version {}", version),
                 Err(e) => warn!("Checkpoint generation failed for version {}: {}", version, e),
                 // Continue even if checkpoint fails - JSON commit is authoritative
@@ -114,11 +116,21 @@ impl MirrorEngine {
     /// Write Parquet checkpoint to `_delta_log/NNNNNNNNNN.checkpoint.parquet`.
     async fn write_checkpoint(
         &self,
-        _table_location: &str,
-        _version: i64,
+        table_location: &str,
+        version: i64,
+        snapshot: &Snapshot,
     ) -> MirrorResult<()> {
-        // Placeholder - full checkpoint implementation in Phase 2
-        // For now, just succeed (checkpoint is optional for functionality)
+        let checkpoint_path = CheckpointWriter::checkpoint_path(table_location, version);
+        debug!("Generating checkpoint at: {}", checkpoint_path);
+
+        // Note: This is a simplified implementation for local testing.
+        // Production would write to object storage, not local filesystem.
+        // The checkpoint path is constructed but not written in this phase.
+        // Phase 3 will integrate with actual object store writes.
+
+        let _bytes_written = CheckpointWriter::write_checkpoint(snapshot, "/tmp/checkpoint.parquet")?;
+
+        info!("Checkpoint generated for version {}", version);
         Ok(())
     }
 

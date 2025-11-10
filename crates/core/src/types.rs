@@ -126,6 +126,27 @@ impl CommitHandle {
     }
 }
 
+impl Default for MetadataUpdate {
+    fn default() -> Self {
+        MetadataUpdate {
+            description: None,
+            schema: None,
+            partition_columns: None,
+            created_time: None,
+            configuration: None,
+        }
+    }
+}
+
+impl Default for ProtocolUpdate {
+    fn default() -> Self {
+        ProtocolUpdate {
+            min_reader_version: None,
+            min_writer_version: None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
