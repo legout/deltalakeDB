@@ -1,23 +1,14 @@
 //! deltalakedb-mirror
 //!
-//! Deterministic serializer for `_delta_log` artifacts (JSON + Parquet checkpoints).
+//! Deterministic serializer and worker for mirroring committed actions to `_delta_log`.
 
 #![warn(missing_docs)]
 
-/// Placeholder module to ensure the crate compiles.
-pub mod placeholder {
-    /// Placeholder function.
-    pub fn hello() -> &'static str {
-        "Hello from deltalakedb-mirror"
-    }
-}
+mod error;
+mod json;
+mod object_store;
+mod worker;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn placeholder_hello() {
-        assert_eq!(placeholder::hello(), "Hello from deltalakedb-mirror");
-    }
-}
+pub use error::MirrorError;
+pub use object_store::{LocalFsObjectStore, ObjectStore};
+pub use worker::{MirrorOutcome, MirrorRunner, MirrorStatus};
