@@ -1,8 +1,9 @@
 //! Simple test for isolation level functionality
 
-use deltalakedb_sql::multi_table::{
-    MultiTableConfig, MultiTableTransaction, TransactionIsolationLevel
+use crate::multi_table::{
+    MultiTableConfig, MultiTableTransaction
 };
+use deltalakedb_core::transaction::TransactionIsolationLevel;
 
 #[tokio::test]
 async fn test_isolation_level_basic() {

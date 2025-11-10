@@ -10,6 +10,7 @@ pub mod actions;
 pub mod error;
 pub mod file;
 pub mod reader;
+pub mod transaction;
 pub mod writer;
 
 // Re-export key types for convenience
@@ -17,7 +18,8 @@ pub use actions::*;
 pub use error::{TxnLogError, TxnLogResult};
 pub use file::{FileTxnLogReader, FileTxnLogWriter};
 pub use reader::{TableSnapshot, TxnLogReader, TxnLogReaderExt};
-pub use writer::{Transaction, TxnLogWriter, TxnLogWriterExt};
+pub use transaction::{Transaction, TransactionIsolationLevel, TransactionState};
+pub use writer::{TxnLogWriter, TxnLogWriterExt};
 
 #[cfg(test)]
 mod tests;

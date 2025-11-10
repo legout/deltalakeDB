@@ -13,6 +13,9 @@ pub mod writer;
 #[cfg(test)]
 mod isolation_test;
 
+#[cfg(test)]
+mod concurrent_acid_tests;
+
 /// Placeholder module to ensure the crate compiles.
 pub mod placeholder {
     /// Placeholder function.

@@ -7,7 +7,7 @@ use std::path::Path;
 use std::time::Duration;
 
 /// Result of a mirroring operation.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct MirroringResult {
     /// Table identifier
     pub table_id: String,
@@ -128,7 +128,7 @@ pub enum StorageBackend {
 
 /// Mirror engine trait for different storage backends.
 #[async_trait]
-pub trait MirrorEngine: Send + Sync {
+pub trait MirrorEngine: Send + Sync + std::fmt::Debug {
     /// Mirror files for a specific table version.
     async fn mirror_table_version(
         &self,
@@ -192,6 +192,7 @@ pub struct MirrorStatus {
 }
 
 /// No-op mirror engine for testing.
+#[derive(Debug)]
 pub struct NoOpMirrorEngine;
 
 #[async_trait]
@@ -218,7 +219,7 @@ impl MirrorEngine for NoOpMirrorEngine {
     }
 
     async fn get_file_metadata(&self, _path: &Path) -> TxnLogResult<FileMetadata> {
-        Err(TxnLogError::NotImplemented("File metadata not implemented".to_string()))
+        Err(TxnLogError::not_implemented("File metadata not implemented"))
     }
 
     async fn delete_file(&self, _path: &Path) -> TxnLogResult<()> {

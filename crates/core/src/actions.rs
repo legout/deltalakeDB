@@ -84,6 +84,15 @@ pub struct Format {
     pub options: HashMap<String, String>,
 }
 
+impl Default for Format {
+    fn default() -> Self {
+        Self {
+            provider: "parquet".to_string(),
+            options: HashMap::new(),
+        }
+    }
+}
+
 /// Protocol update action.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Protocol {
@@ -91,6 +100,15 @@ pub struct Protocol {
     pub min_reader_version: i32,
     /// Minimum writer version.
     pub min_writer_version: i32,
+}
+
+impl Default for Protocol {
+    fn default() -> Self {
+        Self {
+            min_reader_version: 1,
+            min_writer_version: 1,
+        }
+    }
 }
 
 /// Transaction action.

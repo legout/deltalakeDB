@@ -78,62 +78,8 @@ pub trait TxnLogWriter: Send + Sync {
     ) -> TxnLogResult<()>;
 }
 
-/// Represents an active transaction.
-#[derive(Debug)]
-pub struct Transaction {
-    /// Table ID.
-    pub table_id: String,
-    /// Transaction ID.
-    pub transaction_id: String,
-    /// Start timestamp.
-    pub started_at: DateTime<Utc>,
-    /// Current version.
-    pub current_version: i64,
-    /// Staged actions.
-    pub staged_actions: Vec<DeltaAction>,
-}
-
-impl Transaction {
-    /// Create a new transaction.
-    pub fn new(
-        table_id: String,
-        transaction_id: String,
-        current_version: i64,
-    ) -> Self {
-        Self {
-            table_id,
-            transaction_id,
-            started_at: Utc::now(),
-            current_version,
-            staged_actions: Vec::new(),
-        }
-    }
-
-    /// Stage an action.
-    pub fn stage_action(&mut self, action: DeltaAction) {
-        self.staged_actions.push(action);
-    }
-
-    /// Stage multiple actions.
-    pub fn stage_actions(&mut self, actions: Vec<DeltaAction>) {
-        self.staged_actions.extend(actions);
-    }
-
-    /// Get the number of staged actions.
-    pub fn staged_count(&self) -> usize {
-        self.staged_actions.len()
-    }
-
-    /// Clear staged actions.
-    pub fn clear_staged(&mut self) {
-        self.staged_actions.clear();
-    }
-
-    /// Get the next version number.
-    pub fn next_version(&self) -> i64 {
-        self.current_version + 1
-    }
-}
+// Re-export Transaction from the transaction module
+pub use crate::transaction::Transaction;
 
 /// Extension trait for common writer operations.
 #[async_trait::async_trait]

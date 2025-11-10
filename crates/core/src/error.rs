@@ -55,6 +55,10 @@ pub enum TxnLogError {
     /// Internal error.
     #[error("Internal error: {message}")]
     Internal { message: String },
+
+    /// Not implemented error.
+    #[error("Not implemented: {message}")]
+    NotImplemented { message: String },
 }
 
 impl TxnLogError {
@@ -118,6 +122,13 @@ impl TxnLogError {
     /// Create a new internal error.
     pub fn internal(message: impl Into<String>) -> Self {
         Self::Internal {
+            message: message.into(),
+        }
+    }
+
+    /// Create a new not implemented error.
+    pub fn not_implemented(message: impl Into<String>) -> Self {
+        Self::NotImplemented {
             message: message.into(),
         }
     }

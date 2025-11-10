@@ -17,6 +17,7 @@ async-trait = { workspace = true }
 tokio = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
+sqlx = { workspace = true }
 
 [dev-dependencies]
 tokio-test = "0.4"
