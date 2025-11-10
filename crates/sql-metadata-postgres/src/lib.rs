@@ -121,9 +121,11 @@
 
 pub mod reader;
 pub mod schema;
+pub mod writer;
 
 pub use reader::PostgresReader;
 pub use schema::*;
+pub use writer::PostgresWriter;
 
 #[cfg(test)]
 mod tests {
