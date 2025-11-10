@@ -5,6 +5,7 @@ use crate::{SqlResult, DatabaseConfig};
 use deltalakedb_core::{Table, Commit, Protocol, Metadata, Action};
 use serde_json::Value;
 use std::collections::HashMap;
+use std::time::Duration;
 use uuid::Uuid;
 use chrono::{DateTime, Utc};
 
@@ -137,6 +138,53 @@ pub trait DatabaseAdapter: Send + Sync + TxnLogReader + TxnLogWriter {
 
     /// Get database-specific optimizations
     async fn get_optimization_hints(&self) -> SqlResult<Vec<String>>;
+
+    // Multi-table transaction support methods
+
+    /// Begin a distributed transaction with isolation level
+    async fn begin_transaction_with_isolation(&self, isolation_level: IsolationLevel) -> SqlResult<Box<dyn Transaction>>;
+
+    /// Check if database supports native savepoints
+    async fn supports_savepoints(&self) -> bool;
+
+    /// Check if database supports two-phase commit
+    async fn supports_two_phase_commit(&self) -> bool;
+
+    /// Get supported isolation levels
+    async fn supported_isolation_levels(&self) -> Vec<IsolationLevel>;
+
+    /// Create a savepoint within a transaction
+    async fn create_savepoint(&self, transaction_id: Uuid, savepoint_name: &str) -> SqlResult<()>;
+
+    /// Rollback to a savepoint
+    async fn rollback_to_savepoint(&self, transaction_id: Uuid, savepoint_name: &str) -> SqlResult<()>;
+
+    /// Release a savepoint
+    async fn release_savepoint(&self, transaction_id: Uuid, savepoint_name: &str) -> SqlResult<()>;
+
+    /// Prepare transaction for two-phase commit
+    async fn prepare_transaction(&self, transaction_id: Uuid) -> SqlResult<()>;
+
+    /// Commit prepared transaction
+    async fn commit_prepared(&self, transaction_id: Uuid) -> SqlResult<()>;
+
+    /// Rollback prepared transaction
+    async fn rollback_prepared(&self, transaction_id: Uuid) -> SqlResult<()>;
+
+    /// Get transaction status
+    async fn get_transaction_status(&self, transaction_id: Uuid) -> SqlResult<TransactionStatus>;
+
+    /// List active transactions
+    async fn list_active_transactions(&self) -> SqlResult<Vec<Uuid>>;
+
+    /// Set transaction timeout
+    async fn set_transaction_timeout(&self, transaction_id: Uuid, timeout: Duration) -> SqlResult<()>;
+
+    /// Check for deadlocks
+    async fn detect_deadlocks(&self) -> SqlResult<Vec<DeadlockInfo>>;
+
+    /// Resolve deadlock by victimizing a transaction
+    async fn resolve_deadlock(&self, victim_transaction_id: Uuid) -> SqlResult<()>;
 }
 
 /// Trait for database transactions
@@ -273,5 +321,81 @@ mod tests {
         migration.mark_applied(now);
         assert!(migration.applied);
         assert_eq!(migration.applied_at, Some(now));
+    }
+}
+
+/// Transaction isolation levels
+#[derive(Debug, Clone, PartialEq)]
+pub enum IsolationLevel {
+    /// Read committed - reads only see committed data
+    ReadCommitted,
+    /// Repeatable read - reads see a snapshot as of transaction start
+    RepeatableRead,
+    /// Serializable - transaction behaves as if executed serially
+    Serializable,
+}
+
+impl Default for IsolationLevel {
+    fn default() -> Self {
+        Self::ReadCommitted
+    }
+}
+
+/// Transaction status
+#[derive(Debug, Clone, PartialEq)]
+pub enum TransactionStatus {
+    /// Transaction is active and running
+    Active,
+    /// Transaction is prepared for two-phase commit
+    Prepared,
+    /// Transaction has been committed
+    Committed,
+    /// Transaction has been rolled back
+    RolledBack,
+    /// Transaction failed due to error
+    Failed,
+    /// Transaction is in unknown state
+    Unknown,
+}
+
+/// Deadlock information
+#[derive(Debug, Clone)]
+pub struct DeadlockInfo {
+    /// Unique deadlock ID
+    pub deadlock_id: Uuid,
+    /// List of transactions involved in the deadlock
+    pub involved_transactions: Vec<Uuid>,
+    /// Description of the deadlock
+    pub description: String,
+    /// When the deadlock was detected
+    pub detected_at: DateTime<Utc>,
+    /// Recommended victim transaction (if any)
+    pub recommended_victim: Option<Uuid>,
+}
+
+impl DeadlockInfo {
+    /// Create new deadlock information
+    pub fn new(
+        deadlock_id: Uuid,
+        involved_transactions: Vec<Uuid>,
+        description: String,
+    ) -> Self {
+        Self {
+            deadlock_id,
+            involved_transactions,
+            description,
+            detected_at: Utc::now(),
+            recommended_victim: None,
+        }
+    }
+
+    /// Set the recommended victim transaction
+    pub fn set_victim(&mut self, victim_transaction_id: Uuid) {
+        self.recommended_victim = Some(victim_transaction_id);
+    }
+
+    /// Check if a transaction is involved in the deadlock
+    pub fn involves_transaction(&self, transaction_id: Uuid) -> bool {
+        self.involved_transactions.contains(&transaction_id)
     }
 }

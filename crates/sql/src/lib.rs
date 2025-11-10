@@ -15,12 +15,32 @@ pub mod adapters;
 pub mod error;
 pub mod schema;
 pub mod traits;
+pub mod transaction;
+pub mod two_phase_commit;
+pub mod savepoints;
+pub mod transaction_monitor;
+pub mod optimistic_concurrency;
 
 #[cfg(test)]
 pub mod tests;
 
 pub use error::{SqlError, SqlResult};
 pub use traits::{TxnLogReader, TxnLogWriter, DatabaseAdapter};
+pub use transaction::{
+    TransactionManager, Transaction, TransactionState, IsolationLevel,
+    TableOperation, OperationType, OperationData, ConsistencySnapshot, TableSnapshot
+};
+pub use two_phase_commit::{
+    TwoPhaseCommitCoordinator, TwoPhaseCommitContext, Participant, ParticipantStatus,
+    CoordinatorStatus
+};
+pub use savepoints::{SavepointManager, Savepoint, SavepointStatus};
+pub use transaction_monitor::{
+    TransactionMonitor, TransactionMetrics, TransactionHealth, RecoveryAction, MonitorConfig
+};
+pub use optimistic_concurrency::{
+    OptimisticConcurrencyManager, VersionInfo, ConflictResult, CasResult, ConflictStats
+};
 
 /// Configuration for database connections
 #[derive(Debug, Clone)]
