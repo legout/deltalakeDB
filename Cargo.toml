@@ -32,7 +32,11 @@ arrow = "50"
 bytes = "1"
 chrono = { version = "0.4", features = ["serde"] }
 
+# Benchmark and testing dependencies
+criterion = { version = "0.5", features = ["async_tokio"] }
+deltalake = { version = "0.17", default-features = false, features = ["datafusion", "s3"] }
+tempfile = "3"
+
 # Placeholder for future dependencies
-# delta-rs = { version = "...", default-features = false }
 # sqlx = { version = "...", default-features = false, features = ["runtime-tokio-rustls", "postgres", "sqlite"] }
 # duckdb = { version = "..." }
