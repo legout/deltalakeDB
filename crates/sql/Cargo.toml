@@ -19,5 +19,4 @@ chrono = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
-# Placeholder for future dev dependencies
-# tokio-test = "0.4"
+serial_test = "2"

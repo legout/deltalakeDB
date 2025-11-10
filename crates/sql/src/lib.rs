@@ -4,7 +4,7 @@
 
 #![warn(missing_docs)]
 
-/// Postgres-backed transaction log reader implementation.
+/// Postgres-backed transaction log reader/writer implementations.
 pub mod postgres;
 
-pub use postgres::{PostgresConnectionOptions, PostgresTxnLogReader};
+pub use postgres::{PostgresConnectionOptions, PostgresTxnLogReader, PostgresTxnLogWriter};

@@ -115,6 +115,25 @@ pub struct TableSnapshot {
     pub files: Vec<ActiveFile>,
 }
 
+/// Client-supplied transaction marker enabling idempotent retries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppTransaction {
+    /// Logical application identifier (e.g., job or stream name).
+    pub app_id: String,
+    /// Monotonic version scoped to the application.
+    pub app_version: i64,
+}
+
+impl AppTransaction {
+    /// Creates a new marker for the provided app/version pair.
+    pub fn new(app_id: impl Into<String>, app_version: i64) -> Self {
+        Self {
+            app_id: app_id.into(),
+            app_version,
+        }
+    }
+}
+
 /// Data included in a commit request.
 #[derive(Debug, Clone)]
 pub struct CommitRequest {
@@ -130,6 +149,8 @@ pub struct CommitRequest {
     pub add_actions: Vec<ActiveFile>,
     /// Files to remove during the commit.
     pub remove_actions: Vec<RemovedFile>,
+    /// Optional application transaction marker to make retries idempotent.
+    pub app_transaction: Option<AppTransaction>,
 }
 
 impl CommitRequest {
@@ -142,7 +163,14 @@ impl CommitRequest {
             set_properties: HashMap::new(),
             add_actions: Vec::new(),
             remove_actions: Vec::new(),
+            app_transaction: None,
         }
+    }
+
+    /// Sets the app transaction marker for the request.
+    pub fn with_app_transaction(mut self, txn: AppTransaction) -> Self {
+        self.app_transaction = Some(txn);
+        self
     }
 
     fn into_entries(self) -> Result<Vec<CommitEntry>, TxnLogError> {
@@ -158,7 +186,11 @@ impl CommitRequest {
                 properties: self.set_properties,
             });
         }
-        entries.extend(self.add_actions.into_iter().map(|file| CommitEntry::Add { file }));
+        entries.extend(
+            self.add_actions
+                .into_iter()
+                .map(|file| CommitEntry::Add { file }),
+        );
         entries.extend(
             self.remove_actions
                 .into_iter()
@@ -233,10 +265,7 @@ pub trait TxnLogReader {
     /// Returns the latest available version or [`INITIAL_VERSION`] when empty.
     fn current_version(&self) -> Result<Version, TxnLogError>;
     /// Builds a snapshot for the provided version. Passing `None` reads the current version.
-    fn snapshot_at_version(
-        &self,
-        version: Option<Version>,
-    ) -> Result<TableSnapshot, TxnLogError>;
+    fn snapshot_at_version(&self, version: Option<Version>) -> Result<TableSnapshot, TxnLogError>;
     /// Builds a snapshot for the latest version committed at or before the timestamp.
     fn snapshot_by_timestamp(&self, timestamp_millis: i64) -> Result<TableSnapshot, TxnLogError>;
 }
@@ -273,10 +302,7 @@ impl TxnLogReader for FileTxnLogReader {
         self.location.current_version()
     }
 
-    fn snapshot_at_version(
-        &self,
-        version: Option<Version>,
-    ) -> Result<TableSnapshot, TxnLogError> {
+    fn snapshot_at_version(&self, version: Option<Version>) -> Result<TableSnapshot, TxnLogError> {
         let target = match version {
             Some(v) => v,
             None => self.location.current_version()?,
@@ -403,9 +429,7 @@ impl LogLocation {
                 "version must be non-negative, got {version}"
             )));
         }
-        Ok(self
-            .log_dir()
-            .join(format!("{version:020}.json")))
+        Ok(self.log_dir().join(format!("{version:020}.json")))
     }
 
     fn ordered_versions(&self) -> Result<Vec<Version>, TxnLogError> {
@@ -414,7 +438,9 @@ impl LogLocation {
                 let mut versions = Vec::new();
                 for entry in entries {
                     let entry = entry?;
-                    if let Some(version) = filename_to_version(entry.file_name().to_string_lossy().as_ref()) {
+                    if let Some(version) =
+                        filename_to_version(entry.file_name().to_string_lossy().as_ref())
+                    {
                         versions.push(version);
                     }
                 }
