@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/core", "crates/sql", "crates/mirror"]
+members = ["crates/core", "crates/sql", "crates/sql-metadata-postgres", "crates/mirror"]
 resolver = "2"
 
 [workspace.package]
@@ -24,6 +24,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 url = "2"
 regex = "1"
 urlencoding = "2"
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "uuid", "json"] }
+uuid = { version = "1", features = ["v4", "serde"] }
 
 # Placeholder for future dependencies
 # delta-rs = { version = "...", default-features = false }
