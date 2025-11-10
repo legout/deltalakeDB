@@ -1,172 +1,142 @@
-# Implementation Gaps Fix Specification
+## ADDED Requirements
 
-## Overview
+### Requirement: Python pyo3 Integration
+The system SHALL provide functional Python bindings for multi-table transactions using pyo3.
 
-This specification documents the fixes required to align implementation with OpenSpec specifications. 8 issues across multiple modules need correction to achieve production readiness.
+#### Scenario: Python context manager usage
+- **WHEN** user calls `with deltalakedb.begin() as tx:`
+- **THEN** context manager works correctly with auto-commit on exit or rollback on exception
 
-## Issue Categories
+#### Scenario: Python staging
+- **WHEN** user calls `tx.write(table_id, df, mode="append")`
+- **THEN** actions are staged and available for commit
 
-### 1. Python API Integration (Affects: add-multi-table-txn)
+#### Scenario: Python transaction commit
+- **WHEN** context manager exits normally
+- **THEN** transaction commits all staged tables atomically
 
-**Module**: `crates/core/src/python.rs`
+### Requirement: URI Routing to Real Readers
+The system SHALL route deltasql:// URIs to functional reader implementations.
 
-**Current State**: Rust structures without pyo3 integration
+#### Scenario: PostgreSQL URI routing
+- **WHEN** user opens `deltasql://postgres/localhost/mydb/public/table`
+- **THEN** returns functional PostgresReader (not mock)
 
-**Fix**:
-- Add `#[pyclass]` to `PyMultiTableTransaction`
-- Add `#[pymethods]` with public methods
-- Implement `__enter__` and `__exit__` for context manager
-- Create Python module initialization
-- Add `cdylib` target to Cargo.toml
+#### Scenario: SQLite URI routing
+- **WHEN** user opens `deltasql://sqlite//path/to/db.db?table=mytable`
+- **THEN** returns functional SqliteReader (not mock)
 
-**Result**: Python API becomes functional with context manager support
+#### Scenario: DuckDB URI routing
+- **WHEN** user opens `deltasql://duckdb/:memory:?table=mytable`
+- **THEN** returns functional DuckDbReader (not mock)
 
-### 2. URI Routing (Affects: add-sql-uri-support)
+#### Scenario: Real data operations via URI
+- **WHEN** reader created from URI performs get_latest_version()
+- **THEN** actual data is read from database (not mocked)
 
-**Module**: `crates/core/src/table.rs`
+### Requirement: Mirror Engine Implementation
+The system SHALL actually mirror multi-table commits to _delta_log files.
 
-**Current State**: Routing returns `MockTxnLogReader` for all backends
+#### Scenario: Spark mirroring
+- **WHEN** multi-table transaction commits successfully
+- **THEN** system writes _delta_log entries to object store for each table
 
-**Fix**:
-- Create `PostgresReaderAdapter` wrapping actual `PostgresReader`
-- Create `SqliteReaderAdapter` for SQLite
-- Create `DuckDbReaderAdapter` for DuckDB
-- Wire adapters in `DeltaTable::open()` 
-- Remove mock reader placeholders
+#### Scenario: DuckDB mirroring
+- **WHEN** multi-table transaction commits successfully
+- **THEN** system registers tables in DuckDB catalog
 
-**Result**: URI routing returns functional readers for all backends
+#### Scenario: Mirror failure tracking
+- **WHEN** mirroring to one engine fails
+- **THEN** other engines continue and failure is tracked in dl_mirror_status
 
-### 3. Mirror Engine (Affects: add-multi-table-txn)
+### Requirement: Delta Protocol Schema Compliance
+The system SHALL include all required Delta protocol fields in schema.
 
-**Module**: `crates/sql-metadata-postgres/src/multi_table_writer.rs`
+#### Scenario: RemoveFile data_change field
+- **WHEN** removing files from table
+- **THEN** dl_remove_files has data_change field indicating data vs metadata removal
 
-**Current State**: `mirror_spark()` and `mirror_duckdb()` return `Ok(())` without mirroring
+#### Scenario: Migration creates missing field
+- **WHEN** migration runs on existing database
+- **THEN** data_change field is added with correct default
 
-**Fix**:
-- Call actual mirror engine from `crates/mirror`
-- Generate `_delta_log` entries per Delta protocol
-- Write files to object store (S3)
-- Handle serialization correctly
-- Track mirror status in database
+### Requirement: Complete Python Staging
+The system SHALL fully implement Python staging of actions.
 
-**Result**: Multi-table commits actually mirror to external systems
+#### Scenario: DataFrame conversion
+- **WHEN** user stages DataFrame via Python API
+- **THEN** DataFrame is converted to Actions and recorded
 
-### 4. Schema Compliance (Affects: add-sql-schema-postgres)
+#### Scenario: Staged actions recorded
+- **WHEN** transaction stages 3 tables
+- **THEN** all staged actions are available for retrieval
 
-**Module**: SQL migrations
+### Requirement: Test Fixture Reliability
+The system SHALL fail fast with clear error messages in tests.
 
-**Current State**: `dl_remove_files` missing `data_change` boolean field
+#### Scenario: Missing database URL
+- **WHEN** TEST_DATABASE_URL environment variable not set
+- **THEN** test fails immediately with clear error message (not silent failure)
 
-**Fix**:
-- Create migration adding `data_change BOOLEAN NOT NULL DEFAULT TRUE`
-- Update `PostgresWriter` to populate field
-- Update `PostgresReader` to read field
-- Add validation tests
+#### Scenario: Connection string validation
+- **WHEN** test attempts to run
+- **THEN** connection string is validated before test execution
 
-**Result**: Schema fully complies with Delta protocol
+### Requirement: Performance Assertion Accuracy
+The system SHALL enforce actual performance targets in tests.
 
-### 5. Python Staging (Affects: add-multi-table-txn)
+#### Scenario: Single-file commit latency
+- **WHEN** performance test for single-file commit runs
+- **THEN** assertion validates < 50ms (not lenient threshold)
 
-**Module**: `crates/core/src/python.rs`
+#### Scenario: Throughput targets
+- **WHEN** throughput test runs
+- **THEN** assertion validates > 10 commits/sec and > 1000 files/sec
 
-**Current State**: `stage_table()` validates but doesn't stage
+### Requirement: Consistent Error Types
+The system SHALL use consistent error naming and hierarchy.
 
-**Fix**:
-- Accept DataFrame or actions as parameter
-- Convert DataFrame to Actions
-- Call `tx.stage_table()` on inner transaction
-- Actually record actions
+#### Scenario: Error type hierarchy
+- **WHEN** error is generated in any module
+- **THEN** error follows consistent type hierarchy with clear From trait implementations
 
-**Result**: Python staging works end-to-end
+#### Scenario: Error message consistency
+- **WHEN** user encounters error
+- **THEN** error message format is consistent across all modules
 
-### 6. Test Fixtures (Affects: All test suites)
+### Requirement: Specification-Implementation Alignment
+The system SHALL have all implementations match their specifications.
 
-**Module**: `crates/sql-metadata-postgres/tests/fixtures/mod.rs`
+#### Scenario: Python API functional
+- **WHEN** user follows Python API specification
+- **THEN** code works as documented without placeholder stubs
 
-**Current State**: Default connection string fails silently
+#### Scenario: URI routing functional
+- **WHEN** user follows URI routing specification
+- **THEN** real data operations work (not mocked)
 
-**Fix**:
-- Use `expect()` instead of `unwrap_or_else()`
-- Provide clear error message
-- Document test database setup
+#### Scenario: Mirror operations functional
+- **WHEN** user follows mirror specification
+- **THEN** actual files are created in _delta_log (not placeholder)
 
-**Result**: Test failures are clear and actionable
+## MODIFIED Requirements
 
-### 7. Performance Assertions (Affects: add-sql-writer-postgres, add-sql-reader-postgres)
+### Requirement: Multi-Table Transaction API
+The existing system SHALL have all placeholder implementations replaced with functional code.
 
-**Module**: `crates/sql-metadata-postgres/tests/` test files
+#### Scenario: Python API working
+- **WHEN** Python API is used per add-multi-table-txn specification
+- **THEN** all features work end-to-end (not placeholder stubs)
 
-**Current State**: Assertions don't match stated targets
+#### Scenario: Mirror integration complete
+- **WHEN** multi-table transaction commits
+- **THEN** actual mirroring occurs (not placeholder Ok(()))
 
-**Fix**:
-- Update assertions to actual targets
-- Document any SLO changes
-- Ensure targets are realistic
+## Acceptance Criteria
 
-**Result**: Performance tests enforce actual SLOs
-
-### 8. Error Types (Affects: All modules)
-
-**Module**: Across codebase
-
-**Current State**: Inconsistent error naming (`Error`, `TxnLogError`, `TransactionError`)
-
-**Fix**:
-- Define clear error hierarchy
-- Use consistent naming convention
-- Implement `From` trait for conversions
-- Document error handling strategy
-
-**Result**: Consistent, predictable error handling
-
-## Testing Strategy
-
-### For Each Fix
-1. **Unit Tests**: Test fix in isolation
-2. **Integration Tests**: Test with real database
-3. **Conformance Tests**: Verify against Delta protocol
-4. **Regression Tests**: Ensure no performance degradation
-
-### New Test Files
-- `python_integration_tests.rs` (or `.py`)
-- `uri_routing_integration_tests.rs`
-- `mirror_integration_tests.rs`
-- `schema_conformance_tests.rs`
-
-## Validation Checklist
-
-- [ ] All 54 tasks completed
-- [ ] 100% test pass rate
-- [ ] No performance regression
-- [ ] All specifications match implementation
-- [ ] Code review approval
-- [ ] Documentation updated
-- [ ] Staging/production deployment tested
-
-## Success Criteria
-
-✅ Python API: `with deltalakedb.begin() as tx:` works  
-✅ URI Routing: All backends functional  
-✅ Mirroring: Actual files created  
-✅ Schema: All Delta fields present  
-✅ Tests: All assertions enforce targets  
-✅ Documentation: All features documented  
-
-## Risk Assessment
-
-| Risk | Severity | Mitigation |
-|------|----------|-----------|
-| Python API breaking changes | HIGH | Comprehensive Python tests |
-| Mirror format issues | HIGH | Reference existing tests |
-| Schema migration on prod | MEDIUM | Staging test first |
-| Performance regression | MEDIUM | Benchmark before/after |
-
-## Timeline
-
-- Phase 1: 2-3 days
-- Phase 2: 2 days
-- Phase 3: 1 day
-- Phase 4: 0.5 days
-- Testing: 1-2 days
-
-**Total**: 6-7 days to full production readiness
+- All 8 issues fixed and tested
+- 100% test pass rate
+- No performance regression from original targets
+- All specifications match implementations
+- Code review approved
+- Documentation updated
