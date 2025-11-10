@@ -2,8 +2,10 @@
 
 use deltalakedb_core::types::Action;
 use deltalakedb_core::{MultiTableTransaction, StagedTable, TransactionError, TransactionResult};
+use deltalakedb_mirror::MirrorEngine;
 use sqlx::postgres::{PgPool, PgTransaction};
 use sqlx::Postgres;
+use std::sync::Arc;
 use std::collections::BTreeMap;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
@@ -22,15 +24,29 @@ use uuid::Uuid;
 /// 4. Insert actions for all tables
 /// 5. Update versions atomically
 /// 6. Commit (all succeed) or rollback (all fail)
+/// 7. Mirror to external systems (Spark, DuckDB, etc.)
 /// ```
 pub struct MultiTableWriter {
     pool: PgPool,
+    /// Optional mirror engine for writing Delta artifacts to object storage
+    mirror_engine: Option<Arc<MirrorEngine>>,
 }
 
 impl MultiTableWriter {
     /// Create a new multi-table writer.
     pub fn new(pool: PgPool) -> Self {
-        MultiTableWriter { pool }
+        MultiTableWriter {
+            pool,
+            mirror_engine: None,
+        }
+    }
+
+    /// Create a multi-table writer with mirror engine integration.
+    pub fn with_mirror(pool: PgPool, mirror_engine: Arc<MirrorEngine>) -> Self {
+        MultiTableWriter {
+            pool,
+            mirror_engine: Some(mirror_engine),
+        }
     }
 
     /// Commit a multi-table transaction atomically.
@@ -471,17 +487,30 @@ impl MultiTableWriter {
         table_id: Uuid,
         version: i64,
     ) -> Result<(), String> {
-        // In production, this would:
-        // 1. Get all actions for this version from SQL
-        // 2. Generate Delta log JSON format
-        // 3. Write to _delta_log/<version>.json at location
-        // 4. Handle checksum and coordination
-
-        debug!("Mirroring table {} to Spark at {} (v{})", table_id, location, version);
-        
-        // For now, this is a successful no-op that can be tracked
-        // Full implementation requires object_store integration
-        Ok(())
+        // If mirror engine is configured, use it
+        if let Some(mirror_engine) = &self.mirror_engine {
+            // Fetch actions for this version
+            let actions = self.fetch_actions_for_version(table_id, version).await?;
+            
+            // Fetch snapshot for checkpoint generation
+            let snapshot = self.fetch_snapshot_for_version(table_id, version).await?;
+            
+            info!("Mirroring table {} to Spark at {} (v{}) with {} actions", 
+                  table_id, location, version, actions.len());
+            
+            // Use the mirror engine to write Delta artifacts
+            mirror_engine
+                .mirror_version(location, version, &actions, &snapshot)
+                .await
+                .map_err(|e| format!("Mirror to Spark failed: {}", e))?;
+            
+            info!("Successfully mirrored table {} to Spark", table_id);
+            Ok(())
+        } else {
+            // No mirror engine configured - log and return success (no-op)
+            debug!("No mirror engine configured, skipping Spark mirror for table {}", table_id);
+            Ok(())
+        }
     }
 
     /// Mirror to DuckDB (write equivalent table).
@@ -491,17 +520,118 @@ impl MultiTableWriter {
         table_id: Uuid,
         version: i64,
     ) -> Result<(), String> {
-        // In production, this would:
-        // 1. Get all active files for this version
-        // 2. Create DuckDB table schema from metadata
-        // 3. Register Delta table in DuckDB catalog
-        // 4. Sync file list and statistics
+        // DuckDB mirroring via Spark writer (uses Delta log)
+        // DuckDB can read Delta tables via the _delta_log
+        if let Some(mirror_engine) = &self.mirror_engine {
+            // Fetch actions and snapshot
+            let actions = self.fetch_actions_for_version(table_id, version).await?;
+            let snapshot = self.fetch_snapshot_for_version(table_id, version).await?;
+            
+            info!("Mirroring table {} to DuckDB at {} (v{}) with {} actions", 
+                  table_id, location, version, actions.len());
+            
+            // Write Delta log files so DuckDB can consume them
+            mirror_engine
+                .mirror_version(location, version, &actions, &snapshot)
+                .await
+                .map_err(|e| format!("Mirror to DuckDB failed: {}", e))?;
+            
+            info!("Successfully mirrored table {} for DuckDB", table_id);
+            Ok(())
+        } else {
+            debug!("No mirror engine configured, skipping DuckDB mirror for table {}", table_id);
+            Ok(())
+        }
+    }
 
-        debug!("Mirroring table {} to DuckDB at {} (v{})", table_id, location, version);
-        
-        // For now, this is a successful no-op that can be tracked
-        // Full implementation requires duckdb-rs integration
-        Ok(())
+    /// Fetch all actions for a specific version.
+    async fn fetch_actions_for_version(
+        &self,
+        table_id: Uuid,
+        version: i64,
+    ) -> Result<Vec<Action>, String> {
+        let mut actions = Vec::new();
+
+        // Fetch AddFile actions
+        let add_rows = sqlx::query!(
+            "SELECT path, size, modification_time, data_change_version 
+             FROM dl_add_files WHERE table_id = $1 AND version = $2",
+            table_id,
+            version
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| format!("Failed to fetch add files: {}", e))?;
+
+        for row in add_rows {
+            actions.push(Action::Add(deltalakedb_core::types::AddFile {
+                path: row.path,
+                size: row.size,
+                modification_time: row.modification_time,
+                data_change_version: row.data_change_version,
+            }));
+        }
+
+        // Fetch RemoveFile actions
+        let remove_rows = sqlx::query!(
+            "SELECT path, deletion_timestamp, data_change 
+             FROM dl_remove_files WHERE table_id = $1 AND version = $2",
+            table_id,
+            version
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| format!("Failed to fetch remove files: {}", e))?;
+
+        for row in remove_rows {
+            actions.push(Action::Remove(deltalakedb_core::types::RemoveFile {
+                path: row.path,
+                deletion_timestamp: row.deletion_timestamp,
+                data_change: row.data_change,
+            }));
+        }
+
+        Ok(actions)
+    }
+
+    /// Fetch snapshot for a specific version.
+    async fn fetch_snapshot_for_version(
+        &self,
+        table_id: Uuid,
+        version: i64,
+    ) -> Result<deltalakedb_core::types::Snapshot, String> {
+        // Fetch active files for this version
+        let files = sqlx::query!(
+            "SELECT path, size, modification_time, data_change_version 
+             FROM dl_add_files 
+             WHERE table_id = $1 AND version <= $2
+             AND path NOT IN (
+                 SELECT path FROM dl_remove_files 
+                 WHERE table_id = $1 AND version <= $2
+             )
+             ORDER BY modification_time DESC",
+            table_id,
+            version
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| format!("Failed to fetch active files: {}", e))?;
+
+        let mut add_files = Vec::new();
+        for row in files {
+            add_files.push(deltalakedb_core::types::AddFile {
+                path: row.path,
+                size: row.size,
+                modification_time: row.modification_time,
+                data_change_version: row.data_change_version,
+            });
+        }
+
+        Ok(deltalakedb_core::types::Snapshot {
+            version,
+            timestamp: chrono::Utc::now().timestamp_millis(),
+            files: add_files,
+        })
     }
 
     /// Mirror all tables in a transaction sequentially after commit.

@@ -9,6 +9,7 @@ publish = false
 
 [dependencies]
 deltalakedb-core = { path = "../core" }
+deltalakedb-mirror = { path = "../mirror" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -18,6 +19,9 @@ tracing = { workspace = true }
 sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "uuid", "json"] }
 tokio = { workspace = true }
 uuid = { version = "1", features = ["v4", "serde"] }
+object_store = { workspace = true }
+bytes = { workspace = true }
+chrono = { workspace = true }
 
 [dev-dependencies]
 tokio-test = "0.4"
