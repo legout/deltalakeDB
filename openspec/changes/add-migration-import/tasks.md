@@ -37,16 +37,16 @@
 - [x] 6.4 Provide clear error messages with recovery steps
 
 ## 7. Testing
-- [ ] 7.1 Unit tests for action parsing
-- [ ] 7.2 Integration tests with sample Delta tables
-- [ ] 7.3 Test import of table with 10k+ commits
-- [ ] 7.4 Test validation against known-good Delta tables
-- [ ] 7.5 Test dry-run mode produces no changes
-- [ ] 7.6 Test incremental import scenarios
+- [x] 7.1 Unit tests for action parsing
+- [x] 7.2 Integration tests with sample Delta tables
+- [x] 7.3 Test import of table with 10k+ commits
+- [x] 7.4 Test validation against known-good Delta tables
+- [x] 7.5 Test dry-run mode produces no changes
+- [x] 7.6 Test incremental import scenarios
 
 ## 8. Documentation
-- [ ] 8.1 Write import CLI usage guide
-- [ ] 8.2 Document migration workflow
-- [ ] 8.3 Provide example commands for common scenarios
-- [ ] 8.4 Add troubleshooting section for common import issues
-- [ ] 8.5 Document rollback strategy if needed
+- [x] 8.1 Write import CLI usage guide
+- [x] 8.2 Document migration workflow
+- [x] 8.3 Provide example commands for common scenarios
+- [x] 8.4 Add troubleshooting section for common import issues
+- [x] 8.5 Document rollback strategy if needed
