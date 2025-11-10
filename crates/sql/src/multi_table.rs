@@ -1,7 +1,69 @@
 //! Multi-table transaction support for SQL-backed Delta Lake.
 //!
-//! Provides atomic transactions spanning multiple Delta tables with
-//! cross-table consistency guarantees and ordered mirroring.
+//! This module provides atomic transactions spanning multiple Delta tables with
+//! cross-table consistency guarantees and ordered mirroring capabilities.
+//!
+//! # Features
+//!
+//! - **Atomic multi-table operations**: Ensure consistency across multiple Delta tables
+//! - **Cross-table validation**: Detect and prevent consistency violations
+//! - **Configurable isolation levels**: ReadCommitted, RepeatableRead, Serializable
+//! - **Ordered mirroring**: Optional storage system synchronization
+//! - **Deadlock detection**: Prevent and resolve transaction deadlocks
+//! - **Comprehensive error handling**: Detailed error reporting and recovery
+//! - **Performance monitoring**: Built-in metrics and observability
+//!
+//! # Quick Start
+//!
+//! ```rust,no_run
+//! use deltalakedb_sql::multi_table::{MultiTableWriter, MultiTableConfig};
+//! use deltalakedb_core::writer::TxnLogWriterExt;
+//!
+//! // Create a multi-table writer
+//! let config = MultiTableConfig::default();
+//! let writer = MultiTableWriter::new(connection, None, config);
+//!
+//! // Begin a transaction
+//! let mut tx = writer.begin_transaction();
+//!
+//! // Add files to multiple tables
+//! tx.add_files("table1".to_string(), 0, add_files1)?;
+//! tx.add_files("table2".to_string(), 0, add_files2)?;
+//!
+//! // Commit atomically
+//! let result = writer.commit_transaction(tx).await?;
+//! ```
+//!
+//! # Architecture
+//!
+//! The multi-table transaction system consists of several key components:
+//!
+//! - [`MultiTableWriter`]: Main interface for multi-table operations
+//! - [`MultiTableTransaction`]: Represents a transaction spanning multiple tables
+//! - [`TableActions`]: Actions to be performed on a specific table
+//! - [`MultiTableConfig`]: Configuration for transaction behavior
+//!
+//! # Isolation Levels
+//!
+//! - **ReadCommitted**: Reads see committed data, writes acquire exclusive locks
+//! - **RepeatableRead**: Reads see a consistent snapshot throughout the transaction
+//! - **Serializable**: Full serializability with conflict detection
+//!
+//! # Error Handling
+//!
+//! The system provides comprehensive error handling with detailed error types:
+//!
+//! - [`ConsistencyViolation`]: Cross-table consistency issues
+//! - [`TxnLogError`]: Transaction and I/O errors
+//! - Automatic retry logic for transient failures
+//! - Deadlock detection and resolution
+//!
+//! # Performance Considerations
+//!
+//! - Transactions are limited by `max_actions_per_transaction` and `max_tables_per_transaction`
+//! - Large transactions are split into smaller batches for better performance
+//! - Consistency validation can be disabled for performance-critical scenarios
+//! - Mirroring is optional and can be enabled/disabled per configuration
 
 use crate::connection::DatabaseConnection;
 use crate::mirror::MirrorEngine;
@@ -219,6 +281,14 @@ impl TableActions {
         self
     }
 
+    /// Add files to table actions (builder pattern).
+    pub fn with_files(mut self, files: Vec<AddFile>) -> Self {
+        for file in files {
+            self.actions.push(DeltaAction::Add(file));
+        }
+        self
+    }
+
     /// Add files to the table actions.
     pub fn add_files(&mut self, files: Vec<AddFile>) {
         for file in files {
@@ -389,6 +459,14 @@ impl MultiTableTransaction {
         self.staged_tables.insert(table_actions.table_id.clone(), table_actions);
         self.updated_at = Utc::now();
         Ok(())
+    }
+
+    /// Add table actions to transaction (alias for stage_actions).
+    pub async fn add_table_actions(mut self, table_id: String, table_actions: TableActions) -> TxnLogResult<Self> {
+        table_actions.validate()?;
+        self.staged_tables.insert(table_id, table_actions);
+        self.updated_at = Utc::now();
+        Ok(self)
     }
 
     /// Get the number of tables in the transaction.

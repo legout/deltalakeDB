@@ -22,3 +22,12 @@ sqlx = { workspace = true }
 [dev-dependencies]
 tokio-test = "0.4"
 tempfile = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "multi_table_benchmarks"
+harness = false
+
+[[example]]
+name = "multi_table_transactions"
+path = "examples/multi_table_transactions.rs"
