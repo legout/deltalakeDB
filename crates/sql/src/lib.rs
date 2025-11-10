@@ -21,6 +21,7 @@ pub mod savepoints;
 pub mod transaction_monitor;
 pub mod optimistic_concurrency;
 pub mod performance;
+pub mod multi_table_transaction;
 
 #[cfg(test)]
 pub mod tests;
@@ -30,6 +31,10 @@ pub use traits::{TxnLogReader, TxnLogWriter, DatabaseAdapter};
 pub use transaction::{
     TransactionManager, Transaction, TransactionState, IsolationLevel,
     TableOperation, OperationType, OperationData, ConsistencySnapshot, TableSnapshot
+};
+pub use multi_table_transaction::{
+    MultiTableTransaction, TransactionContext, TransactionOptions, TransactionResult,
+    ConflictResolutionStrategy, TransactionExecutor
 };
 pub use two_phase_commit::{
     TwoPhaseCommitCoordinator, TwoPhaseCommitContext, Participant, ParticipantStatus,

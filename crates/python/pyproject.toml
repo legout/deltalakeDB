@@ -1,0 +1,70 @@
+[build-system]
+requires = ["setuptools>=45", "wheel", "setuptools-rust>=1.5"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "deltalakedb"
+version = "0.1.0"
+description = "Python bindings for SQL-Backed Delta Lake metadata"
+readme = "README.md"
+license = {text = "MIT OR Apache-2.0"}
+authors = [
+    {name = "DeltaLakeDB Authors", email = "authors@deltalakedb.org"},
+]
+maintainers = [
+    {name = "DeltaLakeDB Authors", email = "authors@deltalakedb.org"},
+]
+keywords = ["delta", "lake", "sql", "database", "metadata"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Rust",
+    "Topic :: Database",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+requires-python = ">=3.8"
+dependencies = [
+    "typing-extensions>=3.7.4",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=6.0",
+    "pytest-asyncio>=0.18",
+    "mypy>=0.900",
+    "black>=21.0",
+    "isort>=5.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/your-org/deltalakeDB"
+Repository = "https://github.com/your-org/deltalakeDB"
+Documentation = "https://deltalakedb.readthedocs.io"
+Changelog = "https://github.com/your-org/deltalakeDB/blob/main/CHANGELOG.md"
+
+[tool.setuptools]
+packages = ["deltalakedb"]
+
+[tool.setuptools.package-data]
+deltalakedb = ["py.typed"]
+
+[tool.black]
+line-length = 88
+target-version = ["py38"]
+
+[tool.isort]
+profile = "black"
+line_length = 88
+
+[tool.mypy]
+python_version = "3.8"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
