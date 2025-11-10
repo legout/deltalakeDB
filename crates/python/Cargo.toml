@@ -34,6 +34,9 @@ chrono = { workspace = true, features = ["serde"] }
 # UUID generation
 uuid = { workspace = true, features = ["v4", "serde"] }
 
+# Regex for validation
+regex = "1.10"
+
 [dev-dependencies]
 pyo3 = { version = "0.20", features = ["extension-module", "abi3-py38", "auto-initialize"] }
 

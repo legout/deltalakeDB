@@ -18,6 +18,10 @@ pub mod connection;
 pub mod types;
 pub mod multi_table_transaction;
 pub mod deltatable;
+pub mod deltalake_integration;
+pub mod write_operations;
+pub mod dataclasses;
+pub mod pydantic_models;
 
 use error::{DeltaLakeError, DeltaLakeErrorKind};
 
@@ -64,6 +68,33 @@ fn deltalakedb(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_class::<deltatable::DeltaTable>()?;
     m.add_class::<deltatable::PyTableSnapshot>()?;
 
+    // DeltaLake integration
+    m.add_class::<deltalake_integration::DeltaLakeSchemeRegistrar>()?;
+    m.add_class::<deltalake_integration::DeltaLakeBridge>()?;
+
+    // Write operations
+    m.add_class::<write_operations::WriteMode>()?;
+    m.add_class::<write_operations::WriteConfig>()?;
+    m.add_class::<write_operations::FileAction>()?;
+    m.add_class::<write_operations::WriteResult>()?;
+    m.add_class::<write_operations::DeltaWriter>()?;
+    m.add_class::<write_operations::WriteTransaction>()?;
+    m.add_class::<write_operations::WriteErrorHandler>()?;
+
+    // Dataclasses
+    m.add_class::<dataclasses::TableData>()?;
+    m.add_class::<dataclasses::CommitData>()?;
+    m.add_class::<dataclasses::FileData>()?;
+    m.add_class::<dataclasses::ProtocolData>()?;
+    m.add_class::<dataclasses::MetadataData>()?;
+    m.add_class::<dataclasses::DataClassFactory>()?;
+
+    // Pydantic models and validation
+    m.add_class::<pydantic_models::PydanticModels>()?;
+    m.add_class::<pydantic_models::ConfigFactory>()?;
+    m.add_class::<pydantic_models::ValidationUtils>()?;
+    m.add_class::<pydantic_models::ConfigLoader>()?;
+
     // Functions
     m.add_function(wrap_pyfunction!(bindings::connect_to_table))?;
     m.add_function(wrap_pyfunction!(bindings::create_table))?;
@@ -88,6 +119,20 @@ fn deltalakedb(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(deltatable::is_delta_table))?;
     m.add_function(wrap_pyfunction!(deltatable::get_latest_version))?;
     m.add_function(wrap_pyfunction!(deltatable::get_metadata))?;
+
+  m.add_function(wrap_pyfunction!(deltalake_integration::patch_deltalake))?;
+    m.add_function(wrap_pyfunction!(deltalake_integration::auto_patch))?;
+    m.add_function(wrap_pyfunction!(deltalake_integration::handle_deltasql_uri))?;
+    m.add_function(wrap_pyfunction!(deltalake_integration::register_uri_handler))?;
+    m.add_function(wrap_pyfunction!(deltalake_integration::check_uri_compatibility))?;
+
+    // Write operations functions
+    m.add_function(wrap_pyfunction!(write_operations::write_deltalake))?;
+
+    // Dataclass validation functions
+    m.add_function(wrap_pyfunction!(dataclasses::validate_table_data))?;
+    m.add_function(wrap_pyfunction!(dataclasses::validate_commit_data))?;
+    m.add_function(wrap_pyfunction!(dataclasses::validate_file_data))?;
 
     // Constants
     m.add("version", env!("CARGO_PKG_VERSION"))?;

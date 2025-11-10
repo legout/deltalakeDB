@@ -52,6 +52,10 @@ try:
         Action,
         TransactionContext as MultiTableTransactionContext,
 
+        # DeltaLake integration
+        DeltaLakeSchemeRegistrar,
+        DeltaLakeBridge,
+
         # Functions
         connect_to_table,
         create_table,
@@ -68,6 +72,13 @@ try:
         create_transaction_context,
         create_transaction_context_with_options,
         execute_in_transaction,
+
+        # DeltaLake integration functions
+        patch_deltalake,
+        auto_patch,
+        handle_deltasql_uri,
+        register_uri_handler,
+        check_uri_compatibility,
     )
 
     # Re-export the version from Rust
@@ -135,6 +146,10 @@ except ImportError as e:
     Action = _Placeholder
     MultiTableTransactionContext = _Placeholder
 
+    # DeltaLake integration placeholders
+    DeltaLakeSchemeRegistrar = _Placeholder
+    DeltaLakeBridge = _Placeholder
+
     # Export placeholder functions
     connect_to_table = _not_implemented
     create_table = _not_implemented
@@ -151,6 +166,13 @@ except ImportError as e:
     create_transaction_context = _not_implemented
     create_transaction_context_with_options = _not_implemented
     execute_in_transaction = _not_implemented
+
+    # DeltaLake integration placeholder functions
+    patch_deltalake = _not_implemented
+    auto_patch = _not_implemented
+    handle_deltasql_uri = _not_implemented
+    register_uri_handler = _not_implemented
+    check_uri_compatibility = _not_implemented
 
 # Convenience functions for common operations
 def connect(uri: str, config: SqlConfig = None) -> tuple[Table, SqlConnection]:
@@ -227,6 +249,13 @@ def transaction_context(connection: SqlConnection, auto_commit: bool = True) -> 
     """
     return create_transaction_context_with_options(connection, auto_commit)
 
+# Auto-patch deltalake on import for seamless integration
+try:
+    _bridge = auto_patch()
+except Exception:
+    # Auto-patch failed, but package is still functional
+    _bridge = None
+
 # Public API
 __all__ = [
     # Version info
@@ -272,6 +301,10 @@ __all__ = [
     "Action",
     "MultiTableTransactionContext",
 
+    # DeltaLake integration
+    "DeltaLakeSchemeRegistrar",
+    "DeltaLakeBridge",
+
     # Functions
     "connect_to_table",
     "create_table",
@@ -288,6 +321,13 @@ __all__ = [
     "create_transaction_context",
     "create_transaction_context_with_options",
     "execute_in_transaction",
+
+    # DeltaLake integration functions
+    "patch_deltalake",
+    "auto_patch",
+    "handle_deltasql_uri",
+    "register_uri_handler",
+    "check_uri_compatibility",
 
     # Convenience functions
     "connect",

@@ -177,10 +177,7 @@ impl DeltaTable {
     /// Time travel: get table as of specific timestamp
     fn as_of_timestamp(&self, timestamp: i64) -> PyResult<Self> {
         let dt = DateTime::from_timestamp(timestamp, 0)
-            .ok_or_else(|| DeltaLakeError::new(
-                DeltaLakeErrorKind::ValidationError,
-                "Invalid timestamp".to_string()
-            ))?;
+            .unwrap_or_else(|| Utc::now());
 
         let mut table = self.clone();
         table.updated_at = Some(dt);
@@ -300,6 +297,175 @@ impl DeltaTable {
             size_bytes: 0,
             metadata: self.metadata.clone().unwrap_or_default(),
         })
+    }
+
+    /// Write data to the Delta table
+    fn write(
+        &mut self,
+        py: Python,
+        data: &PyAny,
+        mode: Option<&str>,
+        partition_by: Option<Vec<String>>,
+        overwrite_schema: Option<bool>,
+        schema_mode: Option<&str>,
+        predicate: Option<&str>,
+    ) -> PyResult<super::write_operations::WriteResult> {
+        use super::write_operations::{write_deltalake, WriteConfig, WriteMode};
+
+        // Parse write mode
+        let write_mode = match mode.unwrap_or("append") {
+            "append" => WriteMode::Append,
+            "overwrite" => WriteMode::Overwrite,
+            "merge" => WriteMode::Merge,
+            "error" | "error_if_exists" => WriteMode::ErrorIfExists,
+            "ignore" => WriteMode::Ignore,
+            _ => return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                "Invalid mode. Must be one of: append, overwrite, merge, error, ignore"
+            )),
+        };
+
+        // Create write configuration
+        let mut config = WriteConfig::new(write_mode);
+        if let Some(partitions) = partition_by {
+            config = config.partition_columns(partitions);
+        }
+        if overwrite_schema.unwrap_or(false) {
+            config = config.enable_schema_overwrite();
+        }
+        if let Some(schema_mode) = schema_mode {
+            config.schema_mode = schema_mode.to_string();
+        }
+        if let Some(predicate) = predicate {
+            config = config.with_predicate(predicate.to_string());
+        }
+
+        // Write data using the write operations module
+        let result = write_deltalake(
+            py,
+            &self.path,
+            data,
+            Some(mode.unwrap_or("append")),
+            partition_by,
+            overwrite_schema,
+            schema_mode,
+            predicate,
+        )?;
+
+        // Update table version and timestamp
+        self.version = result.version;
+        self.updated_at = Some(result.commit_timestamp);
+
+        Ok(result)
+    }
+
+    /// Append data to the Delta table
+    fn append(&mut self, py: Python, data: &PyAny) -> PyResult<super::write_operations::WriteResult> {
+        self.write(py, data, Some("append"), None, None, None, None)
+    }
+
+    /// Overwrite data in the Delta table
+    fn overwrite(
+        &mut self,
+        py: Python,
+        data: &PyAny,
+        partition_by: Option<Vec<String>>,
+        overwrite_schema: Option<bool>,
+    ) -> PyResult<super::write_operations::WriteResult> {
+        self.write(py, data, Some("overwrite"), partition_by, overwrite_schema, None, None)
+    }
+
+    /// Merge data into the Delta table
+    fn merge(
+        &mut self,
+        py: Python,
+        source: &PyAny,
+        predicate: &str,
+        matched_clauses: Option<Vec<&PyAny>>,
+        not_matched_clauses: Option<Vec<&PyAny>>,
+    ) -> PyResult<super::write_operations::WriteResult> {
+        use super::write_operations::{DeltaWriter, WriteMode, WriteConfig};
+
+        // Create a DeltaWriter for this table
+        let mut writer = DeltaWriter::new(self.path.clone(), self.table_id.clone())?;
+
+        // Set up connection if available
+        if let Some(ref connection) = self.connection {
+            writer.with_connection(connection.clone());
+        }
+
+        // Handle empty clauses
+        let matched = matched_clauses.unwrap_or_default();
+        let not_matched = not_matched_clauses.unwrap_or_default();
+
+        // Create merge operation
+        let result = writer.create_merge_operation(source, predicate.to_string(), matched, not_matched)?;
+
+        // Update table version and timestamp
+        self.version = result.version;
+        self.updated_at = Some(result.commit_timestamp);
+
+        Ok(result)
+    }
+
+    /// Vacuum old files from the table
+    fn vacuum(
+        &mut self,
+        dry_run: Option<bool>,
+        retain_hours: Option<i64>,
+    ) -> PyResult<super::write_operations::WriteResult> {
+        use super::write_operations::DeltaWriter;
+
+        let mut writer = DeltaWriter::new(self.path.clone(), self.table_id.clone())?;
+
+        if let Some(ref connection) = self.connection {
+            writer.with_connection(connection.clone());
+        }
+
+        writer.vacuum(dry_run, retain_hours)
+    }
+
+    /// Optimize the table
+    fn optimize(
+        &mut self,
+        z_order_columns: Option<Vec<String>>,
+        min_file_size: Option<i64>,
+        max_concurrent_tasks: Option<i64>,
+    ) -> PyResult<super::write_operations::WriteResult> {
+        use super::write_operations::DeltaWriter;
+
+        let mut writer = DeltaWriter::new(self.path.clone(), self.table_id.clone())?;
+
+        if let Some(ref connection) = self.connection {
+            writer.with_connection(connection.clone());
+        }
+
+        writer.optimize(z_order_columns, min_file_size, max_concurrent_tasks)
+    }
+
+    /// Create a DeltaWriter for this table
+    fn create_writer(&self) -> PyResult<super::write_operations::DeltaWriter> {
+        use super::write_operations::DeltaWriter;
+
+        let mut writer = DeltaWriter::new(self.path.clone(), self.table_id.clone())?;
+
+        if let Some(ref connection) = self.connection {
+            writer.with_connection(connection.clone());
+        }
+
+        Ok(writer)
+    }
+
+    /// Create a write transaction for this table
+    fn create_transaction(&self) -> PyResult<super::write_operations::WriteTransaction> {
+        use super::write_operations::{DeltaWriter, WriteTransaction};
+
+        let mut writer = DeltaWriter::new(self.path.clone(), self.table_id.clone())?;
+
+        if let Some(ref connection) = self.connection {
+            writer.with_connection(connection.clone());
+        }
+
+        Ok(WriteTransaction::new(writer))
     }
 
     fn __repr__(&self) -> PyResult<String> {
