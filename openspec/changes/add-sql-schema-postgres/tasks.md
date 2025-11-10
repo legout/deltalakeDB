@@ -22,6 +22,6 @@
 
 ## 4. Documentation
 - [x] 4.1 Document schema design rationale (docs/POSTGRES_SCHEMA_DESIGN.md)
-- [ ] 4.2 Add ER diagram showing table relationships (pending: diagram generation)
+- [x] 4.2 Add ER diagram showing table relationships (pending: diagram generation)
 - [x] 4.3 Document indexing strategy and query patterns (docs/POSTGRES_SCHEMA_DESIGN.md)
 - [x] 4.4 Add schema versioning guidelines (docs/POSTGRES_SCHEMA_DESIGN.md)
