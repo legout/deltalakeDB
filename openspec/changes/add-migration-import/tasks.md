@@ -18,23 +18,23 @@
 - [x] 3.4 Report any discrepancies with detailed diff
 
 ## 4. CLI Tool
-- [ ] 4.1 Create binary `deltasql` with `import` subcommand
-- [ ] 4.2 Accept source table path (s3://, file://, etc.)
-- [ ] 4.3 Accept target database URI (`deltasql://postgres/...`)
-- [ ] 4.4 Implement `--dry-run` flag for preview
-- [ ] 4.5 Add `--force` flag to overwrite existing table
-- [ ] 4.6 Show progress bar for long imports
+- [x] 4.1 Create binary `deltasql` with `import` subcommand
+- [x] 4.2 Accept source table path (s3://, file://, etc.)
+- [x] 4.3 Accept target database URI (`deltasql://postgres/...`)
+- [x] 4.4 Implement `--dry-run` flag for preview
+- [x] 4.5 Add `--force` flag to overwrite existing table
+- [x] 4.6 Show progress bar for long imports
 
 ## 5. Incremental Import
-- [ ] 5.1 Support importing up to specific version
-- [ ] 5.2 Allow resuming import from last imported version
-- [ ] 5.3 Handle concurrent writes during import (warn or lock)
+- [x] 5.1 Support importing up to specific version
+- [x] 5.2 Allow resuming import from last imported version
+- [x] 5.3 Handle concurrent writes during import (warn or lock)
 
 ## 6. Error Handling
-- [ ] 6.1 Handle corrupt checkpoint files gracefully
-- [ ] 6.2 Handle missing commit files
-- [ ] 6.3 Rollback SQL changes on import failure
-- [ ] 6.4 Provide clear error messages with recovery steps
+- [x] 6.1 Handle corrupt checkpoint files gracefully
+- [x] 6.2 Handle missing commit files
+- [x] 6.3 Rollback SQL changes on import failure
+- [x] 6.4 Provide clear error messages with recovery steps
 
 ## 7. Testing
 - [ ] 7.1 Unit tests for action parsing
