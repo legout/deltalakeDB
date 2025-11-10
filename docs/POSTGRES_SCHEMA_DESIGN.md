@@ -4,13 +4,25 @@
 
 This document describes the PostgreSQL schema used to store Delta Lake metadata in `deltalakedb`. The schema is designed for efficient querying, optimistic concurrency control, and future extensibility.
 
+**Quick Reference**: See [PostgreSQL Schema ER Diagram](./POSTGRES_SCHEMA_ER_DIAGRAM.md) for visual table relationships and dependency graph.
+
 ## Table of Contents
 
+- [Quick Reference: ER Diagram](#visual-schema)
 - [Core Tables](#core-tables)
 - [Indexes](#indexes)
 - [Query Patterns](#query-patterns)
 - [Performance Characteristics](#performance-characteristics)
 - [Schema Versioning](#schema-versioning)
+
+## Visual Schema
+
+See [POSTGRES_SCHEMA_ER_DIAGRAM.md](./POSTGRES_SCHEMA_ER_DIAGRAM.md) for:
+- Entity-relationship diagram (Mermaid format)
+- Table relationships and constraints
+- Index strategy
+- Scalability considerations
+- Monitoring queries
 
 ## Core Tables
 
