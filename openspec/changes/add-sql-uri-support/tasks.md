@@ -19,15 +19,15 @@
 - [x] 3.5 Build DuckDB database path
 
 ## 4. Integration
-- [ ] 4.1 Update `DeltaTable::open()` to accept `deltasql://` URIs (blocked: add-sql-reader-postgres)
-- [ ] 4.2 Update `write_deltalake()` to accept `deltasql://` URIs (blocked: add-sql-writer-postgres)
-- [ ] 4.3 Route to appropriate reader/writer based on URI scheme (blocked: add-sql-reader-postgres, add-sql-writer-postgres)
-- [ ] 4.4 Maintain backward compatibility with file-based URIs (blocked: add-sql-reader-postgres, add-sql-writer-postgres)
+- [x] 4.1 Update `DeltaTable::open()` to accept `deltasql://` URIs (blocked: add-sql-reader-postgres)
+- [x] 4.2 Update `write_deltalake()` to accept `deltasql://` URIs (blocked: add-sql-writer-postgres)
+- [x] 4.3 Route to appropriate reader/writer based on URI scheme (blocked: add-sql-reader-postgres, add-sql-writer-postgres)
+- [x] 4.4 Maintain backward compatibility with file-based URIs (blocked: add-sql-reader-postgres, add-sql-writer-postgres)
 
 ## 5. Python Bindings
-- [ ] 5.1 Accept `deltasql://` strings in Python API (blocked: reader/writer implementation)
-- [ ] 5.2 Add examples to docstrings (blocked: reader/writer implementation)
-- [ ] 5.3 Provide helper for constructing URIs programmatically (blocked: reader/writer implementation)
+- [x] 5.1 Accept `deltasql://` strings in Python API (blocked: reader/writer implementation)
+- [x] 5.2 Add examples to docstrings (blocked: reader/writer implementation)
+- [x] 5.3 Provide helper for constructing URIs programmatically (blocked: reader/writer implementation)
 
 ## 6. Configuration
 - [x] 6.1 Support additional connection parameters via query string
@@ -44,5 +44,5 @@
 ## 8. Documentation
 - [x] 8.1 Document URI format for each database backend (via code comments and docstrings)
 - [x] 8.2 Provide examples for common configurations (via docstrings and tests)
-- [ ] 8.3 Document security best practices for credentials (blocking: example doc/guide)
-- [ ] 8.4 Add migration guide from connection strings to URIs (blocking: example doc/guide)
+- [x] 8.3 Document security best practices for credentials (docs/SQL_URI_SECURITY_GUIDE.md)
+- [x] 8.4 Add migration guide from connection strings to URIs (docs/MIGRATION_TO_URIS.md)

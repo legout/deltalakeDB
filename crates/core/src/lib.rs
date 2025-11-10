@@ -38,11 +38,13 @@
 
 pub mod error;
 pub mod mocks;
+pub mod table;
 pub mod traits;
 pub mod types;
 pub mod uri;
 
 pub use error::TxnLogError;
+pub use table::{DeltaTable, TableError};
 pub use traits::{TxnLogReader, TxnLogWriter};
 pub use types::{
     Action, AddFile, CommitHandle, MetadataUpdate, ProtocolUpdate, RemoveFile, Snapshot, TxnAction,
