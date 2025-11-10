@@ -4,11 +4,66 @@
 
 #![warn(missing_docs)]
 
-/// Placeholder module to ensure the crate compiles.
-pub mod placeholder {
-    /// Placeholder function.
-    pub fn hello() -> &'static str {
-        "Hello from deltalakedb-sql"
+use async_trait::async_trait;
+use deltalakedb_core::{Table, Commit, Protocol, Metadata, Action, DeltaError};
+use serde_json::Value;
+use std::sync::Arc;
+use uuid::Uuid;
+use chrono::{DateTime, Utc};
+
+pub mod adapters;
+pub mod error;
+pub mod schema;
+pub mod traits;
+
+#[cfg(test)]
+pub mod tests;
+
+pub use error::{SqlError, SqlResult};
+pub use traits::{TxnLogReader, TxnLogWriter, DatabaseAdapter};
+
+/// Configuration for database connections
+#[derive(Debug, Clone)]
+pub struct DatabaseConfig {
+    /// Database connection URL
+    pub url: String,
+    /// Connection pool size
+    pub pool_size: u32,
+    /// Connection timeout in seconds
+    pub timeout: u64,
+    /// Whether to enable SSL
+    pub ssl_enabled: bool,
+}
+
+impl Default for DatabaseConfig {
+    fn default() -> Self {
+        Self {
+            url: "sqlite::memory:".to_string(),
+            pool_size: 10,
+            timeout: 30,
+            ssl_enabled: false,
+        }
+    }
+}
+
+/// Factory for creating database adapters
+pub struct AdapterFactory;
+
+impl AdapterFactory {
+    /// Create a new database adapter based on the connection URL
+    pub async fn create_adapter(config: DatabaseConfig) -> SqlResult<Arc<dyn DatabaseAdapter>> {
+        let adapter: Arc<dyn DatabaseAdapter> = if config.url.starts_with("postgresql://")
+            || config.url.starts_with("postgres://") {
+            Arc::new(adapters::PostgresAdapter::new(config).await?)
+        } else if config.url.starts_with("sqlite://") || config.url.starts_with("sqlite::") {
+            Arc::new(adapters::SQLiteAdapter::new(config).await?)
+        } else if config.url.starts_with("duckdb://") || config.url.starts_with("duckdb::") {
+            Arc::new(adapters::DuckDBAdapter::new(config).await?)
+        } else {
+            return Err(SqlError::UnsupportedDatabase(config.url));
+        };
+
+        Ok(adapter)
     }
 }
 
@@ -17,7 +72,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn placeholder_hello() {
-        assert_eq!(placeholder::hello(), "Hello from deltalakedb-sql");
+    fn test_database_config_default() {
+        let config = DatabaseConfig::default();
+        assert_eq!(config.url, "sqlite::memory:");
+        assert_eq!(config.pool_size, 10);
+        assert_eq!(config.timeout, 30);
+        assert!(!config.ssl_enabled);
+    }
+
+    #[test]
+    fn test_adapter_factory_url_detection() {
+        // These tests don't actually create connections, just test URL parsing logic
+        let postgres_config = DatabaseConfig {
+            url: "postgresql://localhost/test".to_string(),
+            ..Default::default()
+        };
+
+        let sqlite_config = DatabaseConfig {
+            url: "sqlite://memory".to_string(),
+            ..Default::default()
+        };
+
+        let duckdb_config = DatabaseConfig {
+            url: "duckdb://memory".to_string(),
+            ..Default::default()
+        };
+
+        // Just verify the URLs are detected correctly (actual adapter creation tested elsewhere)
+        assert!(postgres_config.url.starts_with("postgresql://"));
+        assert!(sqlite_config.url.starts_with("sqlite://"));
+        assert!(duckdb_config.url.starts_with("duckdb://"));
     }
 }

@@ -9,4 +9,8 @@ wheels/
 # Virtual environments
 .venv
 
+# Git worktrees
 .worktrees
+
+# Rust build artifacts
+target/
