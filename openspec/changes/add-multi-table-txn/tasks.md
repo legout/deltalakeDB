@@ -18,27 +18,27 @@
 - [ ] 3.5 Commit transaction or rollback on any failure
 
 ## 4. Post-Commit Mirroring
-- [ ] 4.1 Mirror each table's version to `_delta_log` after commit
-- [ ] 4.2 Handle partial mirror failures without rolling back SQL
-- [ ] 4.3 Mark failed mirrors for reconciliation
-- [ ] 4.4 Emit metrics for cross-table mirror lag
+- [x] 4.1 Mirror each table's version to `_delta_log` after commit
+- [x] 4.2 Handle partial mirror failures without rolling back SQL
+- [x] 4.3 Mark failed mirrors for reconciliation
+- [x] 4.4 Emit metrics for cross-table mirror lag
 
 ## 5. Python API
-- [ ] 5.1 Expose transaction API through pyo3 bindings
-- [ ] 5.2 Implement context manager for `with deltars.begin()` pattern
-- [ ] 5.3 Add `transaction.write(table, df, mode)` method
-- [ ] 5.4 Provide clear error messages for Python users
+- [x] 5.1 Expose transaction API through pyo3 bindings
+- [x] 5.2 Implement context manager for `with deltars.begin()` pattern
+- [x] 5.3 Add `transaction.write(table, df, mode)` method
+- [x] 5.4 Provide clear error messages for Python users
 
 ## 6. Testing
-- [ ] 6.1 Unit tests for transaction staging and validation
-- [ ] 6.2 Integration tests with 2+ tables and real database
-- [ ] 6.3 Test rollback on version conflict in second table
-- [ ] 6.4 Test partial mirror failure handling
-- [ ] 6.5 Test external reader consistency after multi-table commit
-- [ ] 6.6 Concurrent multi-table transaction isolation tests
+- [x] 6.1 Unit tests for transaction staging and validation
+- [x] 6.2 Integration tests with 2+ tables and real database
+- [x] 6.3 Test rollback on version conflict in second table
+- [x] 6.4 Test partial mirror failure handling
+- [x] 6.5 Test external reader consistency after multi-table commit
+- [x] 6.6 Concurrent multi-table transaction isolation tests
 
 ## 7. Documentation
-- [ ] 7.1 Document multi-table transaction semantics
-- [ ] 7.2 Add examples for common use cases (feature store, dimension+fact)
-- [ ] 7.3 Explain consistency guarantees and caveats
-- [ ] 7.4 Document mirror lag behavior for cross-table commits
+- [x] 7.1 Document multi-table transaction semantics
+- [x] 7.2 Add examples for common use cases (feature store, dimension+fact)
+- [x] 7.3 Explain consistency guarantees and caveats
+- [x] 7.4 Document mirror lag behavior for cross-table commits
