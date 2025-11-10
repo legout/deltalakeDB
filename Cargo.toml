@@ -26,6 +26,11 @@ regex = "1"
 urlencoding = "2"
 sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "uuid", "json"] }
 uuid = { version = "1", features = ["v4", "serde"] }
+object_store = "0.9"
+parquet = "50"
+arrow = "50"
+bytes = "1"
+chrono = { version = "0.4", features = ["serde"] }
 
 # Placeholder for future dependencies
 # delta-rs = { version = "...", default-features = false }
