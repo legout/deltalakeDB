@@ -8,13 +8,13 @@
 - [x] 2.1 Implement `deltasql://` URI parsing and validation
 - [x] 2.2 Add support for different database types (postgres, sqlite, duckdb)
 - [x] 2.3 Handle connection parameters and credentials in URIs
-- [ ] 2.4 Add URI scheme registration with deltalake package
+- [x] 2.4 Add URI scheme registration with deltalake package
 
 ## 3. DeltaLake Compatibility Layer
-- [ ] 3.1 Implement DeltaTable class that works with SQL-backed metadata
-- [ ] 3.2 Add support for time travel queries via version/timestamp
-- [ ] 3.3 Implement file listing and schema operations
-- [ ] 3.4 Ensure compatibility with existing deltalake workflows
+- [x] 3.1 Implement DeltaTable class that works with SQL-backed metadata
+- [x] 3.2 Add support for time travel queries via version/timestamp
+- [x] 3.3 Implement file listing and schema operations
+- [x] 3.4 Ensure compatibility with existing deltalake workflows
 
 ## 4. Write Operations Integration
 - [ ] 4.1 Integrate with deltalake's write_deltalake function
