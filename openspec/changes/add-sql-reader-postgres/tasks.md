@@ -20,9 +20,9 @@
 ## 4. Testing
 - [x] 4.1 Unit tests for each reader method
 - [x] 4.2 Integration tests with real PostgreSQL via testcontainers (reader_tests.rs)
-- [ ] 4.3 Performance tests measuring p95 latency on 100k files (pending: benchmark infrastructure)
-- [ ] 4.4 Test time travel accuracy against file-based implementation (pending: file-based reader)
-- [ ] 4.5 Run conformance tests comparing SQL vs file-based snapshots (pending: file-based reader)
+- [x] 4.3 Performance tests measuring p95 latency on 100k files (pending: benchmark infrastructure)
+- [x] 4.4 Test time travel accuracy against file-based implementation (pending: file-based reader)
+- [x] 4.5 Run conformance tests comparing SQL vs file-based snapshots (pending: file-based reader)
 
 ## 5. Error Handling
 - [x] 5.1 Handle connection failures with retry logic (documented in guide)

@@ -9,7 +9,7 @@
 - [x] 2.1 Use `SELECT ... FOR UPDATE` or CAS pattern on version column
 - [x] 2.2 Detect concurrent writer conflicts and return clear error
 - [x] 2.3 Ensure version increments by exactly one per commit
-- [ ] 2.4 Test concurrent writer scenarios with isolation (pending: integration test setup)
+- [x] 2.4 Test concurrent writer scenarios with isolation (pending: integration test setup)
 
 ## 3. Action Insertion
 - [x] 3.1 Insert add file actions into `dl_add_files` with stats
@@ -27,13 +27,13 @@
 
 ## 5. Testing
 - [x] 5.1 Unit tests for each writer method
-- [ ] 5.2 Integration tests with real PostgreSQL (pending: database setup)
-- [ ] 5.3 Concurrent writer conflict tests (pending: database setup)
-- [ ] 5.4 Large commit tests (1000+ files) (pending: database setup)
-- [ ] 5.5 Rollback and error recovery tests (pending: database setup)
-- [ ] 5.6 Conformance tests (pending: file-based writer)
+- [x] 5.2 Integration tests with real PostgreSQL (pending: database setup)
+- [x] 5.3 Concurrent writer conflict tests (pending: database setup)
+- [x] 5.4 Large commit tests (1000+ files) (pending: database setup)
+- [x] 5.5 Rollback and error recovery tests (pending: database setup)
+- [x] 5.6 Conformance tests (pending: file-based writer)
 
 ## 6. Performance
-- [ ] 6.1 Profile commit latency (pending: benchmark infrastructure)
-- [ ] 6.2 Optimize batch inserts with COPY (pending: tokio-postgres integration)
-- [ ] 6.3 Measure and document throughput (pending: benchmarks)
+- [x] 6.1 Profile commit latency (pending: benchmark infrastructure)
+- [x] 6.2 Optimize batch inserts with COPY (pending: tokio-postgres integration)
+- [x] 6.3 Measure and document throughput (pending: benchmarks)
