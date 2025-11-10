@@ -111,6 +111,46 @@ impl DeltaTable {
         Err(TableError::UnsupportedScheme(uri.to_string()))
     }
 
+    /// Open a Delta table with an injected reader.
+    ///
+    /// This method allows application code to provide a pre-configured reader
+    /// for a URI, avoiding the need for `create_reader_for_uri` to create connections.
+    /// This is the recommended pattern for avoiding circular dependencies between
+    /// the core crate and backend implementations.
+    ///
+    /// # Arguments
+    ///
+    /// * `uri` - The URI string
+    /// * `reader` - Pre-configured reader implementation
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // In sql-metadata-postgres crate or application layer
+    /// use sqlx::postgres::PgPool;
+    /// use deltalakedb_sql_metadata_postgres::PostgresReader;
+    /// use deltalakedb_core::DeltaTable;
+    ///
+    /// let pool = PgPool::connect("postgresql://...").await?;
+    /// let reader = PostgresReader::new(pool, table_id);
+    /// let table = DeltaTable::open_with_reader(
+    ///     "deltasql://postgres/mydb/public/users",
+    ///     Arc::new(reader),
+    /// )?;
+    /// ```
+    pub fn open_with_reader(
+        uri: &str,
+        reader: Arc<dyn TxnLogReader>,
+    ) -> Result<Self, TableError> {
+        let delta_sql_uri = DeltaSqlUri::parse(uri)?;
+
+        Ok(DeltaTable {
+            uri: uri.to_string(),
+            parsed_uri: UriType::DeltaSql(delta_sql_uri),
+            reader: Some(reader),
+        })
+    }
+
     /// Open a SQL-backed Delta table.
     async fn open_sql_backed(
         uri: String,
@@ -218,29 +258,38 @@ impl DeltaTable {
 /// Create appropriate reader for the given SQL URI.
 /// This is a dispatch function that will route to the correct reader implementation
 /// based on the database type.
+/// 
+/// # Note: Dependency Injection Pattern
 ///
-/// # Note
+/// This core crate does not directly depend on backend implementations (postgres, sqlite, duckdb)
+/// to avoid circular dependencies. Backend crates should implement this routing themselves by:
+/// 1. Creating their own reader adapters implementing TxnLogReader
+/// 2. Providing factory methods to create and inject readers
+/// 3. Or using conditional compilation features to enable specific backends
 ///
-/// This function is currently a stub that returns an error, as reader implementations
-/// are not yet available. Once reader implementations are added for each database backend
-/// (PostgreSQL, SQLite, DuckDB), this function will instantiate and return them.
+/// For now, this returns errors indicating that the backend application should
+/// handle URI-to-reader instantiation.
 async fn create_reader_for_uri(uri: &DeltaSqlUri) -> Result<Arc<dyn TxnLogReader>, TableError> {
     match uri {
         crate::uri::DeltaSqlUri::Postgres(_pg) => {
-            // TODO: Return PostgresSqlTxnLogReader once implementation is available
+            // PostgreSQL reader should be provided by application layer
+            // Example in sql-metadata-postgres crate:
+            //   use sqlx::postgres::PgPoolOptions;
+            //   let pool = PgPoolOptions::new().connect(connection_string).await?;
+            //   let reader = PostgresReader::new(pool, table_id);
             Err(TableError::ReaderNotAvailable(
-                "PostgreSQL reader not yet implemented (pending: add-sql-reader-postgres)"
+                "PostgreSQL reader must be created by application layer using \
+                 deltalakedb_sql_metadata_postgres::PostgresReader. \
+                 Use DeltaTable::open_with_reader() to inject reader."
                     .to_string(),
             ))
         }
         crate::uri::DeltaSqlUri::Sqlite(_sqlite) => {
-            // TODO: Return SqliteTxnLogReader once implementation is available
             Err(TableError::ReaderNotAvailable(
                 "SQLite reader not yet implemented".to_string(),
             ))
         }
         crate::uri::DeltaSqlUri::DuckDb(_duckdb) => {
-            // TODO: Return DuckDbTxnLogReader once implementation is available
             Err(TableError::ReaderNotAvailable(
                 "DuckDB reader not yet implemented".to_string(),
             ))
