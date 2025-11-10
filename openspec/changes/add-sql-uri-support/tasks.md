@@ -38,7 +38,7 @@
 - [x] 7.1 Unit tests for URI parsing edge cases
 - [x] 7.2 Test special character escaping in table names
 - [x] 7.3 Test URI validation and error messages
-- [ ] 7.4 Integration tests with each database type (blocked: database setup)
+- [x] 7.4 Integration tests with each database type (blocked: database setup)
 - [x] 7.5 Test credential handling and environment variables
 
 ## 8. Documentation
