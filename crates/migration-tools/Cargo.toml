@@ -1,0 +1,23 @@
+[package]
+name = "deltalakedb-migration-tools"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+deltalakedb-core = { path = "../core" }
+deltalakedb-sql-metadata-postgres = { path = "../sql-metadata-postgres" }
+tokio = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+serde_json = { workspace = true }
+object_store = { workspace = true }
+bytes = { workspace = true }
+futures = { workspace = true }
+indicatif = "0.17"
+clap = { version = "4.4", features = ["derive"] }
+uuid = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+tokio-test = "0.4"
