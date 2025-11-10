@@ -1,21 +1,21 @@
 ## 1. Import Logic
-- [ ] 1.1 Read latest checkpoint from `_delta_log` if present
-- [ ] 1.2 Read all JSON commit files from checkpoint to latest
-- [ ] 1.3 Parse each action (add/remove/metadata/protocol/txn)
-- [ ] 1.4 Insert actions into SQL tables preserving version numbers
-- [ ] 1.5 Populate `dl_table_versions` with original timestamps
+- [x] 1.1 Read latest checkpoint from `_delta_log` if present
+- [x] 1.2 Read all JSON commit files from checkpoint to latest
+- [x] 1.3 Parse each action (add/remove/metadata/protocol/txn)
+- [x] 1.4 Insert actions into SQL tables preserving version numbers
+- [x] 1.5 Populate `dl_table_versions` with original timestamps
 
 ## 2. State Reconstruction
-- [ ] 2.1 Reconstruct full table history from Delta artifacts
-- [ ] 2.2 Handle missing checkpoints (full replay from v0)
-- [ ] 2.3 Respect Delta protocol evolution during replay
-- [ ] 2.4 Track active files computation per version
+- [x] 2.1 Reconstruct full table history from Delta artifacts
+- [x] 2.2 Handle missing checkpoints (full replay from v0)
+- [x] 2.3 Respect Delta protocol evolution during replay
+- [x] 2.4 Track active files computation per version
 
 ## 3. Validation
-- [ ] 3.1 After import, compute snapshot from SQL
-- [ ] 3.2 Compare SQL snapshot with file-based snapshot
-- [ ] 3.3 Validate file counts, schema, protocol versions match
-- [ ] 3.4 Report any discrepancies with detailed diff
+- [x] 3.1 After import, compute snapshot from SQL
+- [x] 3.2 Compare SQL snapshot with file-based snapshot
+- [x] 3.3 Validate file counts, schema, protocol versions match
+- [x] 3.4 Report any discrepancies with detailed diff
 
 ## 4. CLI Tool
 - [ ] 4.1 Create binary `deltasql` with `import` subcommand

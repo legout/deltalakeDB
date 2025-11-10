@@ -6,11 +6,16 @@
 
 #![warn(missing_docs)]
 
+pub mod cli;
+pub mod db_handler;
 pub mod error;
 pub mod importer;
+pub mod progress;
 pub mod reader;
 pub mod validator;
 
+pub use db_handler::DbHandler;
 pub use error::{MigrationError, MigrationResult};
-pub use importer::TableImporter;
+pub use importer::{ImportConfig, ImportStats, TableImporter};
+pub use progress::ImportProgress;
 pub use validator::MigrationValidator;
