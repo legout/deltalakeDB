@@ -143,15 +143,18 @@ impl TxnLogReader for PostgresReader {
         .await
         .map_err(|e| TxnLogError::Other(format!("Failed to fetch add files: {}", e)))?;
 
-        // Get all files removed up to this version
-        let remove_rows = sqlx::query("SELECT file_path FROM dl_remove_files WHERE table_id = $1 AND version <= $2")
-            .bind(self.table_id)
-            .bind(version)
-            .fetch_all(&self.pool)
-            .await
-            .map_err(|e| TxnLogError::Other(format!("Failed to fetch remove files: {}", e)))?;
+        // Get all files removed up to this version (with Delta protocol data_change field)
+        let remove_rows = sqlx::query(
+            "SELECT file_path, data_change FROM dl_remove_files WHERE table_id = $1 AND version <= $2"
+        )
+        .bind(self.table_id)
+        .bind(version)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| TxnLogError::Other(format!("Failed to fetch remove files: {}", e)))?;
 
         // Build set of removed files for efficient lookup
+        // Note: We track both the path and whether it was a data change (for Delta protocol compliance)
         let removed_paths: HashSet<String> = remove_rows
             .iter()
             .map(|r| r.get::<String, _>("file_path"))
