@@ -119,8 +119,10 @@
 
 #![warn(missing_docs)]
 
+pub mod reader;
 pub mod schema;
 
+pub use reader::PostgresReader;
 pub use schema::*;
 
 #[cfg(test)]
