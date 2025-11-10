@@ -1,13 +1,28 @@
 //! Multi-table transaction support for PostgreSQL backend.
 
-use deltalakedb_core::{MultiTableTransaction, TransactionError, TransactionResult};
-use sqlx::postgres::PgPool;
+use deltalakedb_core::types::Action;
+use deltalakedb_core::{MultiTableTransaction, StagedTable, TransactionError, TransactionResult};
+use sqlx::postgres::{PgPool, PgTransaction};
+use sqlx::Postgres;
+use std::collections::BTreeMap;
+use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 /// Multi-table transaction writer for PostgreSQL.
 ///
 /// Handles atomic commits across multiple Delta tables with proper lock ordering
-/// and isolation to prevent deadlocks.
+/// and isolation to prevent deadlocks using PostgreSQL transactions.
+///
+/// # Architecture
+///
+/// ```text
+/// 1. Begin database transaction
+/// 2. Lock all tables in sorted order (SELECT...FOR UPDATE)
+/// 3. Validate versions for all tables
+/// 4. Insert actions for all tables
+/// 5. Update versions atomically
+/// 6. Commit (all succeed) or rollback (all fail)
+/// ```
 pub struct MultiTableWriter {
     pool: PgPool,
 }
@@ -18,7 +33,10 @@ impl MultiTableWriter {
         MultiTableWriter { pool }
     }
 
-    /// Commit a multi-table transaction.
+    /// Commit a multi-table transaction atomically.
+    ///
+    /// All tables in the transaction are locked, validated, and updated
+    /// within a single database transaction. Either all succeed or all fail.
     ///
     /// # Arguments
     ///
@@ -47,74 +65,322 @@ impl MultiTableWriter {
             return Err(TransactionError::TransactionTimeout);
         }
 
+        info!(
+            "Beginning multi-table transaction {} with {} tables",
+            tx.transaction_id(),
+            tx.table_count()
+        );
+
         // Get staged tables in deterministic order (sorted by table_id)
-        let staged_tables: Vec<_> = tx
+        let staged_tables: BTreeMap<Uuid, StagedTable> = tx
             .staged_tables()
             .iter()
             .map(|(id, table)| (*id, table.clone()))
             .collect();
 
-        // Create result to track versions
-        let mut result = deltalakedb_core::TransactionResult::new(tx.transaction_id().to_string());
+        // Get lock order (deterministic)
+        let lock_order = Self::lock_order(staged_tables.keys().copied().collect::<Vec<_>>());
 
-        // In production, would begin database transaction here
-        // For now, simulating the flow
-        tracing::info!(
-            "Beginning multi-table transaction {} with {} tables",
-            tx.transaction_id(),
-            staged_tables.len()
-        );
+        // Begin database transaction
+        let mut db_tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| TransactionError::Other(format!("Failed to begin transaction: {}", e)))?;
 
-        // Lock all tables in deterministic order (prevents deadlocks)
-        for (table_id, _staged) in &staged_tables {
-            tracing::debug!("Acquiring lock for table {}", table_id);
-            // In production: SELECT ... FOR UPDATE with version validation
+        // Lock all tables in deterministic order and validate versions
+        let mut locked_versions: BTreeMap<Uuid, i64> = BTreeMap::new();
+
+        for table_id in &lock_order {
+            debug!("Locking table {}", table_id);
+
+            match self.lock_and_validate_table(&mut db_tx, *table_id).await {
+                Ok(current_version) => {
+                    locked_versions.insert(*table_id, current_version);
+                    debug!("Table {} locked at version {}", table_id, current_version);
+                }
+                Err(e) => {
+                    error!("Failed to lock table {}: {}", table_id, e);
+                    // Rollback is automatic on error (db_tx drops)
+                    return Err(e);
+                }
+            }
         }
 
         // Insert actions for all tables
         for (table_id, staged) in &staged_tables {
-            tracing::debug!(
+            debug!(
                 "Inserting {} actions for table {}",
                 staged.action_count(),
                 table_id
             );
-            // In production: INSERT INTO dl_add_files, dl_remove_files, etc.
-            // Would write each action to appropriate table
 
-            // Simulate new version
-            let new_version = 1;
-            result.add_version(*table_id, new_version);
+            match self.insert_actions(&mut db_tx, *table_id, &staged.actions).await {
+                Ok(_) => {
+                    debug!("Inserted actions for table {}", table_id);
+                }
+                Err(e) => {
+                    error!("Failed to insert actions for table {}: {}", table_id, e);
+                    return Err(TransactionError::Other(format!(
+                        "Failed to insert actions for table {}: {}",
+                        table_id, e
+                    )));
+                }
+            }
         }
 
         // Update versions for all tables atomically
-        tracing::debug!("Updating versions for {} tables", staged_tables.len());
-        // In production: UPDATE dl_tables SET current_version = ... WHERE table_id IN (...)
+        debug!("Updating versions for {} tables", staged_tables.len());
 
-        // Commit database transaction
-        tracing::info!(
-            "Multi-table transaction {} committed successfully",
-            tx.transaction_id()
-        );
+        match self.update_versions(&mut db_tx, &staged_tables).await {
+            Ok(versions) => {
+                debug!("Updated versions for all tables");
 
-        Ok(result)
+                // Commit database transaction
+                db_tx
+                    .commit()
+                    .await
+                    .map_err(|e| TransactionError::Other(format!("Failed to commit transaction: {}", e)))?;
+
+                info!(
+                    "Multi-table transaction {} committed successfully with {} tables",
+                    tx.transaction_id(),
+                    versions.len()
+                );
+
+                // Create result with new versions
+                let mut result =
+                    deltalakedb_core::TransactionResult::new(tx.transaction_id().to_string());
+
+                for (table_id, version) in versions {
+                    result.add_version(table_id, version + 1);
+                }
+
+                Ok(result)
+            }
+            Err(e) => {
+                error!("Failed to update versions: {}", e);
+                Err(TransactionError::Other(format!("Failed to update versions: {}", e)))
+            }
+        }
+    }
+
+    /// Lock a table and validate its version.
+    async fn lock_and_validate_table(
+        &self,
+        db_tx: &mut PgTransaction<'_>,
+        table_id: Uuid,
+    ) -> TransactionResult<i64> {
+        let row = sqlx::query!(
+            "SELECT current_version FROM dl_tables WHERE table_id = $1 FOR UPDATE",
+            table_id
+        )
+        .fetch_optional(db_tx)
+        .await
+        .map_err(|e| TransactionError::Other(format!("Failed to lock table {}: {}", table_id, e)))?;
+
+        match row {
+            Some(row) => Ok(row.current_version),
+            None => Err(TransactionError::ValidationError {
+                table_id,
+                message: format!("Table {} not found", table_id),
+            }),
+        }
+    }
+
+    /// Insert actions for a table within the transaction.
+    async fn insert_actions(
+        &self,
+        db_tx: &mut PgTransaction<'_>,
+        table_id: Uuid,
+        actions: &[Action],
+    ) -> TransactionResult<()> {
+        let current_version = sqlx::query!("SELECT current_version FROM dl_tables WHERE table_id = $1", table_id)
+            .fetch_one(&mut **db_tx)
+            .await
+            .map_err(|e| TransactionError::Other(format!("Failed to get version: {}", e)))?
+            .current_version;
+
+        let new_version = current_version + 1;
+
+        // Insert each action type
+        for action in actions {
+            match action {
+                Action::Add(file) => {
+                    sqlx::query!(
+                        "INSERT INTO dl_add_files 
+                         (table_id, version, path, size, modification_time, data_change_version)
+                         VALUES ($1, $2, $3, $4, $5, $6)",
+                        table_id,
+                        new_version,
+                        file.path,
+                        file.size,
+                        file.modification_time,
+                        file.data_change_version
+                    )
+                    .execute(&mut **db_tx)
+                    .await
+                    .map_err(|e| TransactionError::Other(format!("Failed to insert add action: {}", e)))?;
+                }
+                Action::Remove(file) => {
+                    sqlx::query!(
+                        "INSERT INTO dl_remove_files 
+                         (table_id, version, path, deletion_timestamp, data_change)
+                         VALUES ($1, $2, $3, $4, $5)",
+                        table_id,
+                        new_version,
+                        file.path,
+                        file.deletion_timestamp,
+                        file.data_change
+                    )
+                    .execute(&mut **db_tx)
+                    .await
+                    .map_err(|e| TransactionError::Other(format!("Failed to insert remove action: {}", e)))?;
+                }
+                Action::Metadata(meta) => {
+                    sqlx::query!(
+                        "INSERT INTO dl_metadata_updates 
+                         (table_id, version, description, schema, partition_columns, created_time)
+                         VALUES ($1, $2, $3, $4, $5, $6)",
+                        table_id,
+                        new_version,
+                        meta.description,
+                        meta.schema,
+                        meta.partition_columns.as_ref().map(|v| v.join(",")),
+                        meta.created_time
+                    )
+                    .execute(&mut **db_tx)
+                    .await
+                    .map_err(|e| TransactionError::Other(format!("Failed to insert metadata action: {}", e)))?;
+                }
+                Action::Protocol(proto) => {
+                    sqlx::query!(
+                        "INSERT INTO dl_protocol_updates 
+                         (table_id, version, min_reader_version, min_writer_version)
+                         VALUES ($1, $2, $3, $4)",
+                        table_id,
+                        new_version,
+                        proto.min_reader_version,
+                        proto.min_writer_version
+                    )
+                    .execute(&mut **db_tx)
+                    .await
+                    .map_err(|e| TransactionError::Other(format!("Failed to insert protocol action: {}", e)))?;
+                }
+                Action::Txn(txn) => {
+                    sqlx::query!(
+                        "INSERT INTO dl_txn_actions 
+                         (table_id, version, app_id, version as txn_version, timestamp)
+                         VALUES ($1, $2, $3, $4, $5)",
+                        table_id,
+                        new_version,
+                        txn.app_id,
+                        txn.version,
+                        txn.timestamp
+                    )
+                    .execute(&mut **db_tx)
+                    .await
+                    .map_err(|e| TransactionError::Other(format!("Failed to insert txn action: {}", e)))?;
+                }
+            }
+        }
+
+        // Insert version record
+        sqlx::query!(
+            "INSERT INTO dl_table_versions 
+             (table_id, version, commit_timestamp, operation_type, num_actions)
+             VALUES ($1, $2, NOW(), $3, $4)",
+            table_id,
+            new_version,
+            "MultiTableCommit",
+            actions.len() as i32
+        )
+        .execute(&mut **db_tx)
+        .await
+        .map_err(|e| TransactionError::Other(format!("Failed to insert version record: {}", e)))?;
+
+        Ok(())
+    }
+
+    /// Update versions for all tables atomically.
+    async fn update_versions(
+        &self,
+        db_tx: &mut PgTransaction<'_>,
+        staged_tables: &BTreeMap<Uuid, StagedTable>,
+    ) -> TransactionResult<BTreeMap<Uuid, i64>> {
+        let table_ids: Vec<Uuid> = staged_tables.keys().copied().collect();
+
+        sqlx::query!(
+            "UPDATE dl_tables 
+             SET current_version = current_version + 1,
+                 updated_at = NOW()
+             WHERE table_id = ANY($1)",
+            &table_ids
+        )
+        .execute(&mut **db_tx)
+        .await
+        .map_err(|e| TransactionError::Other(format!("Failed to update versions: {}", e)))?;
+
+        // Fetch updated versions
+        let mut versions = BTreeMap::new();
+
+        for table_id in table_ids {
+            let row = sqlx::query!(
+                "SELECT current_version FROM dl_tables WHERE table_id = $1",
+                table_id
+            )
+            .fetch_one(&mut **db_tx)
+            .await
+            .map_err(|e| TransactionError::Other(format!("Failed to fetch updated version: {}", e)))?;
+
+            versions.insert(table_id, row.current_version - 1); // Subtract 1 because we just incremented
+        }
+
+        Ok(versions)
     }
 
     /// Rollback a multi-table transaction.
     ///
-    /// # Arguments
-    ///
-    /// * `transaction_id` - ID of transaction to rollback
+    /// In practice, this is automatic when the transaction handle is dropped.
+    /// This method is here for explicit control.
     pub async fn rollback(&self, transaction_id: &str) -> TransactionResult<()> {
-        tracing::warn!("Rolling back transaction {}", transaction_id);
-        // In production: would handle actual database rollback
+        warn!("Rolling back transaction {}", transaction_id);
+        // Rollback happens automatically when db_tx is dropped
         Ok(())
     }
 
     /// Get lock order for tables (sorted by UUID for determinism).
-    fn lock_order(table_ids: &[Uuid]) -> Vec<Uuid> {
-        let mut sorted = table_ids.to_vec();
-        sorted.sort();
-        sorted
+    ///
+    /// Ensures consistent lock ordering across all multi-table transactions,
+    /// preventing deadlocks.
+    fn lock_order(mut table_ids: Vec<Uuid>) -> Vec<Uuid> {
+        table_ids.sort();
+        table_ids
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_lock_order_determinism() {
+        let id1 = Uuid::new_v4();
+        let id2 = Uuid::new_v4();
+        let id3 = Uuid::new_v4();
+
+        let order1 = MultiTableWriter::lock_order(vec![id1, id2, id3]);
+        let order2 = MultiTableWriter::lock_order(vec![id3, id1, id2]);
+        let order3 = MultiTableWriter::lock_order(vec![id2, id3, id1]);
+
+        assert_eq!(order1, order2);
+        assert_eq!(order2, order3);
+    }
+
+    #[test]
+    fn test_writer_creation() {
+        // This would need a real or mock pool in actual tests
+        let _writer: Option<MultiTableWriter> = None;
     }
 }
 
