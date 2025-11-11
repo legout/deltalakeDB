@@ -111,6 +111,24 @@ pub struct PartitionStats {
 }
 
 impl Table {
+    /// Creates a new table with just a name (for testing purposes).
+    pub fn test_new(name: &str) -> Self {
+        let schema_string = r#"{"type":"struct","fields":[]}"#;
+        Self {
+            id: Uuid::new_v4().to_string(),
+            name: name.to_string(),
+            location: format!("/tmp/delta/{}", name),
+            protocol: Protocol::default(),
+            metadata: Metadata::new(schema_string).unwrap(),
+            version: 0,
+            last_modified: None,
+            created_time: None,
+            description: None,
+            properties: HashMap::new(),
+            additional_metadata: HashMap::new(),
+        }
+    }
+
     /// Creates a new table with the specified name and location.
     ///
     /// # Arguments

@@ -11,6 +11,9 @@ mod protocol;
 mod metadata;
 mod commit;
 
+#[cfg(test)]
+mod tests;
+
 pub use error::{DeltaError, ProtocolError, ValidationError};
 pub use table::Table;
 pub use actions::{Action, AddFile, RemoveFile};

@@ -223,6 +223,16 @@ impl Protocol {
         Ok(protocol)
     }
 
+    /// Checks if this protocol supports the given reader version.
+    pub fn supports_reader_version(&self, version: i32) -> bool {
+        version >= self.min_reader_version && version <= MAX_SUPPORTED_READER_VERSION
+    }
+
+    /// Checks if this protocol supports the given writer version.
+    pub fn supports_writer_version(&self, version: i32) -> bool {
+        version >= self.min_writer_version && version <= MAX_SUPPORTED_WRITER_VERSION
+    }
+
     fn features_compatible_for_reading(&self, other: &Protocol) -> bool {
         match (&self.reader_features, &other.reader_features) {
             (None, _) => true,
