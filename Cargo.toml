@@ -30,3 +30,7 @@ pyo3 = { version = "0.27", features = ["extension-module", "abi3-py312"] }
 pyo3-async-runtimes = { version = "0.27", features = ["tokio-runtime"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 criterion = { version = "0.5", features = ["html_reports"] }
+# Parquet dependencies for checkpoint generation
+parquet = { version = "50.0", features = ["async", "arrow"] }
+arrow = { version = "50.0", features = ["chrono"] }
+bytes = "1.5"

@@ -18,6 +18,9 @@ tokio = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 sqlx = { workspace = true }
+parquet = { workspace = true }
+arrow = { workspace = true }
+bytes = { workspace = true }
 
 [dev-dependencies]
 tokio-test = "0.4"
