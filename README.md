@@ -8,6 +8,64 @@ SQL-backed metadata plane for Delta Lake.
 
 `deltalakedb` provides a SQL-backed metadata plane for Delta Lake while preserving full Delta compatibility by mirroring commits to `_delta_log/` for external engines. It improves metadata read latency and enables multi-table ACID semantics using a relational database as the source of truth.
 
+## Features
+
+- **SQL Metadata Reader**: Read Delta Lake metadata from PostgreSQL, SQLite, or DuckDB
+- **Time Travel Support**: Query historical table states and versions
+- **Multi-Table ACID**: Atomic transactions across multiple Delta tables
+- **Performance Optimized**: Materialized views and performance indexes
+- **Protocol Compliant**: Full Delta Lake protocol compatibility
+- **Easy Migration**: Drop-in replacement for file-based readers
+
+## Quick Start
+
+### SQL Metadata Reader
+
+```rust
+use deltalakedb_sql::{connection::DatabaseConfig, reader::SqlTxnLogReader};
+use deltalakedb_core::reader::TxnLogReader;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Create database configuration
+    let config = DatabaseConfig::sqlite_memory();
+    
+    // Create reader
+    let reader = SqlTxnLogReader::new(config, "my_table".to_string())?;
+    
+    // Read current version
+    let version = reader.get_version().await?;
+    println!("Current version: {}", version);
+    
+    // Get active files
+    let files = reader.get_active_files().await?;
+    println!("Active files: {}", files.len());
+    
+    Ok(())
+}
+```
+
+### Multi-Table Transactions
+
+```rust
+use deltalakedb_sql::{multi_table::MultiTableWriter, connection::DatabaseConfig};
+use deltalakedb_core::writer::TxnLogWriterExt;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let config = DatabaseConfig::postgres("localhost", 5432, "db", "user", "pass")?;
+    let connection = config.connect().await?;
+    let writer = MultiTableWriter::new(connection, None, Default::default());
+    
+    let mut tx = writer.begin_transaction();
+    tx.add_files("table1".to_string(), 0, vec![])?;
+    tx.add_files("table2".to_string(), 0, vec![])?;
+    
+    let result = writer.commit_transaction(tx).await?;
+    Ok(())
+}
+```
+
 ## Development
 
 This project uses:
@@ -29,6 +87,19 @@ uv run pytest
 # Build Rust workspace
 cargo build
 cargo test
+```
+
+### Examples
+
+```bash
+# Run SQL metadata reader example
+cargo run --example sql_metadata_reader -p deltalakedb-sql
+
+# Run multi-table transactions example
+cargo run --example multi_table_transactions -p deltalakedb-sql
+
+# Run benchmarks
+cargo run --example performance_benchmark -p deltalakedb-sql --features=benchmarks
 ```
 
 ## Local Testing

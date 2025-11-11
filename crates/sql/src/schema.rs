@@ -1,12 +1,17 @@
 //! SQL schema definitions for Delta Lake metadata storage.
 //!
-//! Provides database-specific DDL for creating the relational schema that stores
+//! Provides database-specific DDL for creating relational schema that stores
 //! Delta Lake transaction log metadata across Postgres, SQLite, and DuckDB.
+//!
+//! This module implements the schema defined in the PRD §7 with database-specific
+//! optimizations for each supported engine.
 
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fmt::Write;
 
 /// Database engine types supported by the SQL backend.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DatabaseEngine {
     /// PostgreSQL database
     Postgres,
@@ -23,6 +28,42 @@ impl DatabaseEngine {
             DatabaseEngine::Postgres => "postgres",
             DatabaseEngine::Sqlite => "sqlite",
             DatabaseEngine::DuckDB => "duckdb",
+        }
+    }
+
+    /// Get the default port for the database engine.
+    pub fn default_port(&self) -> u16 {
+        match self {
+            DatabaseEngine::Postgres => 5432,
+            DatabaseEngine::Sqlite => 0, // File-based
+            DatabaseEngine::DuckDB => 0, // File-based
+        }
+    }
+}
+
+/// Schema configuration options for Delta Lake metadata storage.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SchemaConfig {
+    /// Enable materialized views for active files (PostgreSQL only)
+    pub enable_materialized_views: bool,
+    /// Enable table partitioning by table_id (PostgreSQL only)
+    pub enable_partitioning: bool,
+    /// Custom table prefix for all Delta Lake tables
+    pub table_prefix: String,
+    /// Enable additional performance indexes
+    pub enable_performance_indexes: bool,
+    /// Enable audit logging tables
+    pub enable_audit_tables: bool,
+}
+
+impl Default for SchemaConfig {
+    fn default() -> Self {
+        Self {
+            enable_materialized_views: true,
+            enable_partitioning: false, // Disabled by default for simplicity
+            table_prefix: "dl_".to_string(),
+            enable_performance_indexes: true,
+            enable_audit_tables: false,
         }
     }
 }
@@ -787,6 +828,349 @@ CREATE INDEX IF NOT EXISTS idx_dl_multi_table_transactions_state ON dl_multi_tab
             }
         }
     }
+}
+
+/// Schema migration manager for Delta Lake SQL backend.
+pub struct SchemaManager {
+    engine: DatabaseEngine,
+    config: SchemaConfig,
+}
+
+impl SchemaManager {
+    /// Create a new schema manager.
+    pub fn new(engine: DatabaseEngine, config: SchemaConfig) -> Self {
+        Self { engine, config }
+    }
+    
+    /// Get the current schema version from the database.
+    pub async fn get_current_version(&self, connection: &sqlx::Pool<sqlx::Any>) -> Result<Option<i64>, Box<dyn std::error::Error + Send + Sync>> {
+        let query = match self.engine {
+            DatabaseEngine::Postgres => {
+                r#"
+                SELECT COALESCE(MAX(version), 0) as version 
+                FROM information_schema.tables 
+                WHERE table_name = 'dl_schema_migrations'
+                "#
+            }
+            DatabaseEngine::Sqlite => {
+                r#"
+                SELECT COALESCE(MAX(version), 0) as version 
+                FROM sqlite_master 
+                WHERE type = 'table' AND name = 'dl_schema_migrations'
+                "#
+            }
+            DatabaseEngine::DuckDB => {
+                r#"
+                SELECT COALESCE(MAX(version), 0) as version 
+                FROM information_schema.tables 
+                WHERE table_name = 'dl_schema_migrations'
+                "#
+            }
+        };
+        
+        let result: Option<(i64,)> = sqlx::query_as(query)
+            .fetch_optional(connection)
+            .await?;
+            
+        Ok(result.map(|(v,)| v))
+    }
+    
+    /// Initialize the schema with migration tracking.
+    pub async fn initialize_schema(&self, connection: &sqlx::Pool<sqlx::Any>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        // Create migrations table first
+        let migrations_ddl = self.create_migrations_table_ddl();
+        sqlx::query(&migrations_ddl).execute(connection).await?;
+        
+        // Create the main schema
+        let generator = SchemaGenerator::new(self.engine);
+        let schema_ddl = generator.generate_ddl();
+        
+        // Execute DDL statements one by one for better error handling
+        let statements: Vec<&str> = schema_ddl.split(';')
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty() && !s.starts_with("--"))
+            .collect();
+            
+        for statement in statements {
+            if !statement.trim().is_empty() {
+                sqlx::query(statement).execute(connection).await?;
+            }
+        }
+        
+        // Record the initial migration
+        self.record_migration(connection, 1, "Initial schema creation").await?;
+        
+        Ok(())
+    }
+    
+    /// Apply pending migrations up to the target version.
+    pub async fn migrate_to_version(&self, connection: &sqlx::Pool<sqlx::Any>, target_version: i64) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let current_version = self.get_current_version(connection).await?.unwrap_or(0);
+        
+        if current_version >= target_version {
+            return Ok(());
+        }
+        
+        for version in (current_version + 1)..=target_version {
+            let migration = self.get_migration(version)?;
+            sqlx::query(&migration.ddl).execute(connection).await?;
+            self.record_migration(connection, version, &migration.description).await?;
+        }
+        
+        Ok(())
+    }
+    
+    /// Record a migration in the migrations table.
+    async fn record_migration(&self, connection: &sqlx::Pool<sqlx::Any>, version: i64, description: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let query = match self.engine {
+            DatabaseEngine::Postgres => {
+                r#"
+                INSERT INTO dl_schema_migrations (version, description, applied_at) 
+                VALUES ($1, $2, NOW())
+                ON CONFLICT (version) DO NOTHING
+                "#
+            }
+            DatabaseEngine::Sqlite => {
+                r#"
+                INSERT OR IGNORE INTO dl_schema_migrations (version, description, applied_at) 
+                VALUES (?, ?, datetime('now'))
+                "#
+            }
+            DatabaseEngine::DuckDB => {
+                r#"
+                INSERT INTO dl_schema_migrations (version, description, applied_at) 
+                VALUES (?, ?, NOW())
+                ON CONFLICT (version) DO NOTHING
+                "#
+            }
+        };
+        
+        sqlx::query(query)
+            .bind(version)
+            .bind(description)
+            .execute(connection)
+            .await?;
+            
+        Ok(())
+    }
+    
+    /// Get migration definition for a specific version.
+    fn get_migration(&self, version: i64) -> Result<Migration, Box<dyn std::error::Error + Send + Sync>> {
+        match version {
+            1 => Ok(Migration {
+                version: 1,
+                description: "Initial schema creation".to_string(),
+                ddl: String::new(), // Handled by initialize_schema
+            }),
+            2 => Ok(Migration {
+                version: 2,
+                description: "Add performance indexes".to_string(),
+                ddl: self.create_additional_indexes_ddl(),
+            }),
+            3 => Ok(Migration {
+                version: 3,
+                description: "Add materialized views for active files".to_string(),
+                ddl: self.create_materialized_views_ddl(),
+            }),
+            _ => Err(format!("Migration version {} not found", version).into()),
+        }
+    }
+    
+    /// Create DDL for the migrations tracking table.
+    fn create_migrations_table_ddl(&self) -> String {
+        match self.engine {
+            DatabaseEngine::Postgres => {
+                r#"
+                CREATE TABLE IF NOT EXISTS dl_schema_migrations (
+                    version BIGINT PRIMARY KEY,
+                    description TEXT NOT NULL,
+                    applied_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+                );
+                "#
+                .to_string()
+            }
+            DatabaseEngine::Sqlite => {
+                r#"
+                CREATE TABLE IF NOT EXISTS dl_schema_migrations (
+                    version INTEGER PRIMARY KEY,
+                    description TEXT NOT NULL,
+                    applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+                "#
+                .to_string()
+            }
+            DatabaseEngine::DuckDB => {
+                r#"
+                CREATE TABLE IF NOT EXISTS dl_schema_migrations (
+                    version BIGINT PRIMARY KEY,
+                    description VARCHAR NOT NULL,
+                    applied_at TIMESTAMP NOT NULL DEFAULT NOW()
+                );
+                "#
+                .to_string()
+            }
+        }
+    }
+    
+    /// Create additional performance indexes (migration version 2).
+    fn create_additional_indexes_ddl(&self) -> String {
+        match self.engine {
+            DatabaseEngine::Postgres => {
+                r#"
+                CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_dl_add_files_partition_values 
+                ON dl_add_files USING GIN (partition_values);
+                CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_dl_metadata_updates_table_version 
+                ON dl_metadata_updates(table_id, version DESC);
+                "#
+                .to_string()
+            }
+            DatabaseEngine::Sqlite => {
+                r#"
+                CREATE INDEX IF NOT EXISTS idx_dl_add_files_partition_values 
+                ON dl_add_files(partition_values);
+                CREATE INDEX IF NOT EXISTS idx_dl_metadata_updates_table_version 
+                ON dl_metadata_updates(table_id, version DESC);
+                "#
+                .to_string()
+            }
+            DatabaseEngine::DuckDB => {
+                r#"
+                CREATE INDEX IF NOT EXISTS idx_dl_add_files_partition_values 
+                ON dl_add_files(partition_values);
+                CREATE INDEX IF NOT EXISTS idx_dl_metadata_updates_table_version 
+                ON dl_metadata_updates(table_id, version DESC);
+                "#
+                .to_string()
+            }
+        }
+    }
+    
+    /// Create materialized views for active files (migration version 3, PostgreSQL only).
+    fn create_materialized_views_ddl(&self) -> String {
+        match self.engine {
+            DatabaseEngine::Postgres if self.config.enable_materialized_views => {
+                r#"
+                CREATE MATERIALIZED VIEW IF NOT EXISTS mv_dl_active_files AS
+                WITH latest_versions AS (
+                    SELECT table_id, MAX(version) as latest_version
+                    FROM dl_table_versions
+                    GROUP BY table_id
+                ),
+                add_files AS (
+                    SELECT 
+                        af.table_id,
+                        af.path,
+                        af.size,
+                        af.partition_values,
+                        af.stats,
+                        af.tags
+                    FROM dl_add_files af
+                    JOIN latest_versions lv ON af.table_id = lv.table_id AND af.version = lv.latest_version
+                    LEFT JOIN dl_remove_files rf ON af.table_id = rf.table_id AND af.path = rf.path
+                    WHERE rf.path IS NULL
+                )
+                SELECT 
+                    t.name as table_name,
+                    t.location,
+                    af.*
+                FROM add_files af
+                JOIN dl_tables t ON af.table_id = t.table_id;
+                
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_dl_active_files_table_path 
+                ON mv_dl_active_files(table_name, path);
+                "#
+                .to_string()
+            }
+            _ => String::new(), // Not supported for SQLite/DuckDB or disabled
+        }
+    }
+    
+    /// Refresh materialized views (PostgreSQL only).
+    pub async fn refresh_materialized_views(&self, connection: &sqlx::Pool<sqlx::Any>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        if self.engine == DatabaseEngine::Postgres && self.config.enable_materialized_views {
+            sqlx::query("REFRESH MATERIALIZED VIEW CONCURRENTLY mv_dl_active_files")
+                .execute(connection)
+                .await?;
+        }
+        Ok(())
+    }
+    
+    /// Validate schema integrity.
+    pub async fn validate_schema(&self, connection: &sqlx::Pool<sqlx::Any>) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+        let expected_tables = vec![
+            "dl_tables",
+            "dl_table_versions", 
+            "dl_add_files",
+            "dl_remove_files",
+            "dl_metadata_updates",
+            "dl_protocol_updates",
+            "dl_mirror_status",
+            "dl_multi_table_transactions",
+            "dl_mirroring_alerts",
+            "dl_mirroring_summaries",
+            "dl_mirroring_config",
+            "dl_mirroring_escalations",
+            "dl_mirroring_retry_schedule",
+            "dl_schema_migrations",
+        ];
+        
+        for table in expected_tables {
+            let exists = self.table_exists(connection, table).await?;
+            if !exists {
+                return Ok(false);
+            }
+        }
+        
+        Ok(true)
+    }
+    
+    /// Check if a table exists in the database.
+    async fn table_exists(&self, connection: &sqlx::Pool<sqlx::Any>, table_name: &str) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+        let query = match self.engine {
+            DatabaseEngine::Postgres => {
+                r#"
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables 
+                    WHERE table_name = $1
+                )
+                "#
+            }
+            DatabaseEngine::Sqlite => {
+                r#"
+                SELECT EXISTS (
+                    SELECT FROM sqlite_master 
+                    WHERE type = 'table' AND name = ?
+                )
+                "#
+            }
+            DatabaseEngine::DuckDB => {
+                r#"
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables 
+                    WHERE table_name = ?
+                )
+                "#
+            }
+        };
+        
+        let (exists,): (bool,) = sqlx::query_as(query)
+            .bind(table_name)
+            .fetch_one(connection)
+            .await?;
+            
+        Ok(exists)
+    }
+}
+
+/// Represents a schema migration.
+#[derive(Debug)]
+pub struct Migration {
+    /// Migration version number
+    pub version: i64,
+    /// Human-readable description
+    pub description: String,
+    /// DDL statements to execute
+    pub ddl: String,
 }
 
 #[cfg(test)]

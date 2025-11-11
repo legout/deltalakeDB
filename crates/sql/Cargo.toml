@@ -21,6 +21,8 @@ sqlx = { workspace = true }
 parquet = { workspace = true }
 arrow = { workspace = true }
 bytes = { workspace = true }
+futures = "0.3"
+rand = "0.8"
 
 [dev-dependencies]
 tokio-test = "0.4"

@@ -10,12 +10,15 @@
 //! - **Ordered mirroring**: Optional data replication to secondary storage systems
 //! - **Deadlock detection**: Automatic detection and resolution of transaction deadlocks
 //! - **Performance optimization**: Configurable batching and caching strategies
+//! - **SQL metadata reading**: Delta Lake metadata queries via SQL databases
+//! - **Time travel support**: Query historical table states and versions
 //!
 //! ## Quick Start
 //!
 //! ```rust,no_run
-//! use deltalakedb_sql::{multi_table::MultiTableWriter, connection::DatabaseConfig};
+//! use deltalakedb_sql::{multi_table::MultiTableWriter, reader::SqlTxnLogReader, connection::DatabaseConfig};
 //! use deltalakedb_core::writer::TxnLogWriterExt;
+//! use deltalakedb_core::reader::TxnLogReader;
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -36,6 +39,11 @@
 //!     // Commit atomically
 //!     let result = writer.commit_transaction(tx).await?;
 //!     
+//!     // Read metadata via SQL
+//!     let reader = SqlTxnLogReader::new(config, "my_table".to_string())?;
+//!     let current_version = reader.get_version().await?;
+//!     let table_metadata = reader.get_table_metadata().await?;
+//!     
 //!     Ok(())
 //! }
 //! ```
@@ -45,6 +53,7 @@
 //! - [`connection`]: Database connection management and configuration
 //! - [`multi_table`]: Multi-table transaction support and coordination
 //! - [`mirror`]: Data mirroring and replication functionality
+//! - [`reader`]: SQL-based Delta Lake metadata reading operations
 //! - [`schema`]: Schema management and validation
 //! - [`writer`]: Single-table transaction writing operations
 //!
@@ -61,6 +70,7 @@
 pub mod connection;
 pub mod mirror;
 pub mod multi_table;
+pub mod reader;
 pub mod schema;
 pub mod writer;
 
@@ -69,6 +79,12 @@ mod isolation_test;
 
 #[cfg(test)]
 mod concurrent_acid_tests;
+
+#[cfg(test)]
+mod sql_reader_tests;
+
+pub mod benchmarks;
+pub mod conformance_tests;
 
 /// Placeholder module to ensure the crate compiles.
 pub mod placeholder {
