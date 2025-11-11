@@ -24,6 +24,9 @@ pub mod dataclasses;
 pub mod pydantic_models;
 pub mod migration;
 pub mod logging;
+pub mod lazy_loading;
+pub mod caching;
+pub mod memory_optimization;
 
 use error::{DeltaLakeError, DeltaLakeErrorKind};
 
@@ -111,6 +114,31 @@ fn deltalakedb(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_class::<logging::DeltaLogger>()?;
     m.add_class::<logging::LoggingUtils>()?;
 
+    // Lazy loading framework
+    m.add_class::<lazy_loading::LoadingStrategy>()?;
+    m.add_class::<lazy_loading::CachePolicy>()?;
+    m.add_class::<lazy_loading::LazyLoadingConfig>()?;
+    m.add_class::<lazy_loading::LoadingStats>()?;
+    m.add_class::<lazy_loading::LazyTableMetadata>()?;
+    m.add_class::<lazy_loading::LazyCommitMetadata>()?;
+    m.add_class::<lazy_loading::LazyLoadingManager>()?;
+    m.add_class::<lazy_loading::LazyLoadingUtils>()?;
+
+    // Caching framework
+    m.add_class::<caching::EvictionPolicy>()?;
+    m.add_class::<caching::CacheStats>()?;
+    m.add_class::<caching::MemoryCache<PyObject>>()?;
+    m.add_class::<caching::DeltaLakeCacheManager>()?;
+    m.add_class::<caching::CacheUtils>()?;
+
+    // Memory optimization framework
+    m.add_class::<memory_optimization::OptimizationStrategy>()?;
+    m.add_class::<memory_optimization::CompressionType>()?;
+    m.add_class::<memory_optimization::MemoryStats>()?;
+    m.add_class::<memory_optimization::FileChunk>()?;
+    m.add_class::<memory_optimization::MemoryOptimizedFileList>()?;
+    m.add_class::<memory_optimization::MemoryOptimizationUtils>()?;
+
     // Functions
     m.add_function(wrap_pyfunction!(bindings::connect_to_table))?;
     m.add_function(wrap_pyfunction!(bindings::create_table))?;
@@ -165,6 +193,18 @@ fn deltalakedb(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(logging::setup_logging))?;
     m.add_function(wrap_pyfunction!(logging::create_logger))?;
     m.add_function(wrap_pyfunction!(logging::initialize_logging_module))?;
+
+    // Lazy loading utility functions
+    m.add_function(wrap_pyfunction!(lazy_loading::create_lazy_table_metadata))?;
+    m.add_function(wrap_pyfunction!(lazy_loading::create_lazy_loading_manager))?;
+
+    // Caching utility functions
+    m.add_function(wrap_pyfunction!(caching::create_memory_cache))?;
+    m.add_function(wrap_pyfunction!(caching::create_deltalake_cache_manager))?;
+
+    // Memory optimization utility functions
+    m.add_function(wrap_pyfunction!(memory_optimization::create_memory_optimized_file_list))?;
+    m.add_function(wrap_pyfunction!(memory_optimization::get_memory_optimization_recommendations))?;
 
     // Constants
     m.add("version", env!("CARGO_PKG_VERSION"))?;
