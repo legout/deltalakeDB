@@ -28,6 +28,8 @@ pub mod lazy_loading;
 pub mod caching;
 pub mod memory_optimization;
 pub mod async_io;
+pub mod multi_table_transactions;
+pub mod testing;
 
 use error::{DeltaLakeError, DeltaLakeErrorKind};
 
@@ -149,6 +151,25 @@ fn deltalakedb(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_class::<async_io::AsyncDeltaLakeOperations>()?;
     m.add_class::<async_io::AsyncUtils>()?;
 
+    // Multi-table transaction framework
+    m.add_class::<multi_table_transactions::MultiTableTransactionStatus>()?;
+    m.add_class::<multi_table_transactions::MultiTableIsolationLevel>()?;
+    m.add_class::<multi_table_transactions::CrossTableOperationType>()?;
+    m.add_class::<multi_table_transactions::MultiTableTransactionConfig>()?;
+    m.add_class::<multi_table_transactions::CrossTableParticipant>()?;
+    m.add_class::<multi_table_transactions::MultiTableTransaction>()?;
+    m.add_class::<multi_table_transactions::MultiTableTransactionManager>()?;
+
+    // Testing framework
+    m.add_class::<testing::TestStatus>()?;
+    m.add_class::<testing::TestType>()?;
+    m.add_class::<testing::TestLevel>()?;
+    m.add_class::<testing::TestResult>()?;
+    m.add_class::<testing::TestSuiteConfig>()?;
+    m.add_class::<testing::TestSuiteExecutor>()?;
+    m.add_class::<testing::TestAssertions>()?;
+    m.add_class::<testing::TestDataGenerator>()?;
+
     // Functions
     m.add_function(wrap_pyfunction!(bindings::connect_to_table))?;
     m.add_function(wrap_pyfunction!(bindings::create_table))?;
@@ -219,6 +240,16 @@ fn deltalakedb(_py: Python, m: &PyModule) -> PyResult<()> {
     // Async I/O utility functions
     m.add_function(wrap_pyfunction!(async_io::create_async_executor))?;
     m.add_function(wrap_pyfunction!(async_io::create_async_deltalake_operations))?;
+
+    // Multi-table transaction utility functions
+    m.add_function(wrap_pyfunction!(multi_table_transactions::create_multi_table_transaction))?;
+    m.add_function(wrap_pyfunction!(multi_table_transactions::create_multi_table_transaction_manager))?;
+
+    // Testing framework utility functions
+    m.add_function(wrap_pyfunction!(testing::create_test_suite))?;
+    m.add_function(wrap_pyfunction!(testing::run_comprehensive_tests))?;
+    m.add_function(wrap_pyfunction!(testing::generate_test_coverage_report))?;
+    m.add_function(wrap_pyfunction!(testing::run_performance_benchmarks))?;
 
     // Constants
     m.add("version", env!("CARGO_PKG_VERSION"))?;
