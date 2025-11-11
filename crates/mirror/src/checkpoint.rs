@@ -10,10 +10,12 @@ use parquet::arrow::arrow_writer::ArrowWriter;
 use parquet::basic::{Compression, ZstdLevel};
 use parquet::file::properties::WriterProperties;
 
-use deltalakedb_core::txn_log::{ActiveFile, Protocol, TableMetadata};
+use deltalakedb_core::{
+    delta::{MetaDataPayload, ProtocolPayload},
+    txn_log::{ActiveFile, Protocol, TableMetadata},
+};
 use serde_json;
 
-use crate::json::{MetaDataPayload, ProtocolPayload};
 use crate::MirrorError;
 
 /// Serializes table snapshots into Delta-compliant Parquet checkpoints.
@@ -25,14 +27,14 @@ impl CheckpointSerializer {
         protocol: &Protocol,
         metadata: &TableMetadata,
         files: &[ActiveFile],
-        properties: &HashMap<String, String>,
+        _properties: &HashMap<String, String>,
     ) -> Result<Vec<u8>, MirrorError> {
         let mut actions = Vec::new();
         actions.push(CheckpointAction::Protocol(ProtocolPayload::from(protocol)));
         actions.push(CheckpointAction::MetaData(MetaDataPayload {
             schema_string: metadata.schema_json.clone(),
             partition_columns: metadata.partition_columns.clone(),
-            configuration: properties.clone(),
+            configuration: metadata.configuration.clone(),
         }));
         for file in files {
             actions.push(CheckpointAction::Add(file.clone()));

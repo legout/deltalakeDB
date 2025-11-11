@@ -11,6 +11,7 @@ mod object_store;
 mod service;
 mod worker;
 
+pub use checkpoint::CheckpointSerializer;
 pub use error::MirrorError;
 pub use object_store::{LocalFsObjectStore, ObjectStore};
 pub use service::{AlertSink, LagAlert, LagSeverity, MirrorService};

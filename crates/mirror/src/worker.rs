@@ -1,19 +1,21 @@
 use std::collections::HashMap;
+use std::time::Instant;
 
 use chrono::{DateTime, Utc};
 use deltalakedb_core::txn_log::{RemovedFile, Version};
+use deltalakedb_observability as obs;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use sqlx::{postgres::PgRow, PgPool, Postgres, Row, Transaction};
-use tracing::trace;
+use tracing::{info_span, trace};
 use uuid::Uuid;
 
 use crate::error::MirrorError;
-use crate::json::{
-    Action, AddPayload, CommitInfo, JsonCommitSerializer, MetaDataPayload, ProtocolPayload,
-    RemovePayload,
-};
+use crate::json::JsonCommitSerializer;
 use crate::object_store::ObjectStore;
+use deltalakedb_core::delta::{
+    AddPayload, CommitInfo, DeltaAction, MetaDataPayload, ProtocolPayload, RemovePayload,
+};
 
 /// Result of processing a single pending mirror job.
 #[derive(Debug, Clone)]
@@ -71,17 +73,26 @@ where
             return Ok(None);
         };
 
+        let span = info_span!("mirror_job", table_id = %job.table_id, version = job.version);
+        let _guard = span.enter();
+        let start = Instant::now();
         let commit = self.load_commit(&mut tx, &job).await?;
         let actions = self.build_actions(&commit)?;
         let bytes = JsonCommitSerializer::serialize(&actions)?;
         let digest = hex::encode(Sha256::digest(&bytes));
         let file_name = format!("{:020}.json", job.version);
 
-        let result = self.store.put_file(&job.location, &file_name, &bytes).await;
+        let result = {
+            let write_span =
+                info_span!("object_store_write", table_id = %job.table_id, version = job.version);
+            let _write_guard = write_span.enter();
+            self.store.put_file(&job.location, &file_name, &bytes).await
+        };
 
         let outcome = match result {
             Ok(()) => {
                 self.mark_succeeded(&mut tx, &job, &digest).await?;
+                obs::record_mirror_latency(job.table_id, job.version, start.elapsed());
                 MirrorOutcome {
                     table_id: job.table_id,
                     version: job.version,
@@ -91,6 +102,7 @@ where
             Err(err) => {
                 let msg = err.to_string();
                 self.mark_failed(&mut tx, &job, &msg).await?;
+                obs::record_mirror_failure(job.table_id, job.version, &msg);
                 MirrorOutcome {
                     table_id: job.table_id,
                     version: job.version,
@@ -219,10 +231,10 @@ where
         })
     }
 
-    fn build_actions(&self, data: &CommitData) -> Result<Vec<Action>, MirrorError> {
+    fn build_actions(&self, data: &CommitData) -> Result<Vec<DeltaAction>, MirrorError> {
         let mut actions = Vec::new();
         let timestamp = data.committed_at.timestamp_millis();
-        actions.push(Action::CommitInfo {
+        actions.push(DeltaAction::CommitInfo {
             commit_info: CommitInfo::new(
                 data.operation.clone(),
                 data.operation_params.clone(),
@@ -235,7 +247,7 @@ where
                 min_reader_version: row.get::<i32, _>("min_reader_version") as u32,
                 min_writer_version: row.get::<i32, _>("min_writer_version") as u32,
             };
-            actions.push(Action::Protocol { protocol: payload });
+            actions.push(DeltaAction::Protocol { protocol: payload });
         }
 
         if let Some(row) = &data.metadata {
@@ -247,7 +259,7 @@ where
                 partition_columns: partition_columns.unwrap_or_default(),
                 configuration: value_to_string_map(configuration)?,
             };
-            actions.push(Action::MetaData { meta_data: payload });
+            actions.push(DeltaAction::MetaData { meta_data: payload });
         }
 
         for row in &data.add_rows {
@@ -271,7 +283,7 @@ where
                     .try_get::<Option<bool>, _>("data_change")?
                     .unwrap_or(true),
             };
-            actions.push(Action::Add { add: payload });
+            actions.push(DeltaAction::Add { add: payload });
         }
 
         for row in &data.remove_rows {
@@ -280,7 +292,7 @@ where
                 deletion_timestamp: row.try_get("deletion_timestamp")?,
             };
             let payload = RemovePayload::from_removed(&removed);
-            actions.push(Action::Remove { remove: payload });
+            actions.push(DeltaAction::Remove { remove: payload });
         }
 
         Ok(actions)

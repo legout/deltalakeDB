@@ -5,6 +5,7 @@ use deltalakedb_core::txn_log::{
     ActiveFile, AppTransaction, CommitRequest, CommitResult, Protocol, RemovedFile, TableMetadata,
     TableSnapshot, TxnLogError, TxnLogReader, TxnLogWriter, Version, INITIAL_VERSION,
 };
+use deltalakedb_observability as obs;
 use serde_json::{Map as JsonMap, Number as JsonNumber, Value};
 use sqlx::{postgres::PgPoolOptions, PgPool, Postgres, Row, Transaction};
 use std::collections::HashMap;
@@ -13,9 +14,9 @@ use std::fmt;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::runtime::{Builder, Runtime};
-use tracing::{trace, warn};
+use tracing::{info_span, trace, warn};
 use uuid::Uuid;
 
 /// Connection tuning knobs for the Postgres reader.
@@ -311,14 +312,24 @@ impl TxnLogReader for PostgresTxnLogReader {
     }
 
     fn snapshot_at_version(&self, version: Option<Version>) -> Result<TableSnapshot, TxnLogError> {
+        let span = info_span!("sql_read", table_id = %self.table_id, mode = "version");
+        let _guard = span.enter();
+        let start = Instant::now();
         let version = self.block_on(self.resolve_version(version))?;
         trace!(table_id = %self.table_id, version, "building snapshot by version");
-        self.block_on(self.snapshot_for_version(version))
+        let snapshot = self.block_on(self.snapshot_for_version(version))?;
+        obs::record_metadata_latency(self.table_id, start.elapsed());
+        Ok(snapshot)
     }
 
     fn snapshot_by_timestamp(&self, timestamp_millis: i64) -> Result<TableSnapshot, TxnLogError> {
+        let span = info_span!("sql_read", table_id = %self.table_id, mode = "timestamp");
+        let _guard = span.enter();
+        let start = Instant::now();
         trace!(table_id = %self.table_id, timestamp_millis, "building snapshot by timestamp");
-        self.block_on(self.snapshot_by_timestamp_async(timestamp_millis))
+        let snapshot = self.block_on(self.snapshot_by_timestamp_async(timestamp_millis))?;
+        obs::record_metadata_latency(self.table_id, start.elapsed());
+        Ok(snapshot)
     }
 }
 
@@ -387,8 +398,9 @@ impl PostgresTxnLogWriter {
             ));
         }
 
+        let start = Instant::now();
         let mut tx = self.pool.begin().await.map_err(map_db_error)?;
-        self.ensure_head_row(&mut tx).await?;
+        ensure_head_row_for(&mut tx, self.table_id).await?;
 
         let CommitRequest {
             expected_version,
@@ -401,15 +413,15 @@ impl PostgresTxnLogWriter {
         } = request;
 
         if let Some(marker) = app_transaction.as_ref() {
-            if let Some(result) = self.lookup_existing_commit(&mut tx, marker).await? {
+            if let Some(result) = lookup_existing_commit_for(&mut tx, self.table_id, marker).await?
+            {
                 tx.rollback().await.map_err(map_db_error)?;
                 return Ok(result);
             }
         }
 
-        let metadata_to_insert = self
-            .prepare_metadata(&mut tx, metadata, &mut set_properties)
-            .await?;
+        let metadata_to_insert =
+            prepare_metadata_for(&mut tx, self.table_id, metadata, &mut set_properties).await?;
 
         let action_count = compute_action_count(
             metadata_to_insert.as_ref().is_some(),
@@ -440,22 +452,29 @@ impl PostgresTxnLogWriter {
 
         if cas_rows.rows_affected() == 0 {
             if let Some(marker) = app_transaction.as_ref() {
-                if let Some(result) = self.lookup_existing_commit(&mut tx, marker).await? {
+                if let Some(result) =
+                    lookup_existing_commit_for(&mut tx, self.table_id, marker).await?
+                {
                     tx.rollback().await.map_err(map_db_error)?;
                     return Ok(result);
                 }
             }
 
-            let actual = self.load_current_version(&mut tx).await?;
+            let actual = load_current_version_for(&mut tx, self.table_id).await?;
             tx.rollback().await.map_err(map_db_error)?;
+            obs::record_commit_failure(
+                self.table_id,
+                "concurrency conflict updating dl_table_heads",
+            );
             return Err(TxnLogError::Concurrency {
                 expected: expected_version,
                 actual,
             });
         }
 
-        self.insert_table_version(
+        insert_table_version_for(
             &mut tx,
+            self.table_id,
             new_version,
             committed_at,
             action_count,
@@ -464,367 +483,36 @@ impl PostgresTxnLogWriter {
         .await?;
 
         if let Some(metadata) = metadata_to_insert {
-            self.insert_metadata(&mut tx, new_version, metadata).await?;
+            insert_metadata_for(&mut tx, self.table_id, new_version, metadata).await?;
         }
 
         if let Some(protocol) = protocol {
-            self.insert_protocol(&mut tx, new_version, protocol).await?;
+            insert_protocol_for(&mut tx, self.table_id, new_version, protocol).await?;
         }
 
         for file in add_actions {
-            self.insert_add_file(&mut tx, new_version, file).await?;
+            insert_add_file_for(&mut tx, self.table_id, new_version, file).await?;
         }
 
         for file in remove_actions {
-            self.insert_remove_file(&mut tx, new_version, file).await?;
+            insert_remove_file_for(&mut tx, self.table_id, new_version, file).await?;
         }
 
         if let Some(marker) = app_transaction.as_ref() {
-            self.insert_txn_marker(&mut tx, marker, timestamp_millis)
-                .await?;
+            insert_txn_marker_for(&mut tx, self.table_id, marker, timestamp_millis).await?;
         }
 
-        self.enqueue_mirror(&mut tx, new_version).await?;
+        enqueue_mirror_for(&mut tx, self.table_id, new_version).await?;
 
         tx.commit().await.map_err(map_db_error)?;
 
-        Ok(CommitResult {
+        let result = CommitResult {
             version: new_version,
             timestamp_millis,
             action_count,
-        })
-    }
-
-    async fn ensure_head_row(&self, tx: &mut Transaction<'_, Postgres>) -> Result<(), TxnLogError> {
-        sqlx::query(
-            r#"
-            INSERT INTO dl_table_heads(table_id, current_version)
-            VALUES ($1, $2)
-            ON CONFLICT (table_id) DO NOTHING
-            "#,
-        )
-        .bind(self.table_id)
-        .bind(INITIAL_VERSION)
-        .execute(tx.as_mut())
-        .await
-        .map_err(map_db_error)?;
-        Ok(())
-    }
-
-    async fn prepare_metadata(
-        &self,
-        tx: &mut Transaction<'_, Postgres>,
-        metadata: Option<TableMetadata>,
-        set_properties: &mut HashMap<String, String>,
-    ) -> Result<Option<TableMetadata>, TxnLogError> {
-        if metadata.is_none() && set_properties.is_empty() {
-            return Ok(None);
-        }
-
-        let mut combined = match metadata {
-            Some(meta) => meta,
-            None => self
-                .latest_metadata(tx)
-                .await?
-                .ok_or(TxnLogError::MissingMetadata)?,
         };
-
-        for (key, value) in set_properties.drain() {
-            combined.configuration.insert(key, value);
-        }
-
-        Ok(Some(combined))
-    }
-
-    async fn latest_metadata(
-        &self,
-        tx: &mut Transaction<'_, Postgres>,
-    ) -> Result<Option<TableMetadata>, TxnLogError> {
-        let row = sqlx::query(
-            r#"
-            SELECT schema_json, partition_columns, table_properties
-            FROM dl_metadata_updates
-            WHERE table_id = $1
-            ORDER BY version DESC
-            LIMIT 1
-            "#,
-        )
-        .bind(self.table_id)
-        .fetch_optional(tx.as_mut())
-        .await
-        .map_err(map_db_error)?;
-
-        if let Some(row) = row {
-            let schema_json: Value = row.try_get("schema_json").map_err(map_db_error)?;
-            let partition_columns: Option<Vec<String>> =
-                row.try_get("partition_columns").map_err(map_db_error)?;
-            let properties: Option<Value> =
-                row.try_get("table_properties").map_err(map_db_error)?;
-
-            return Ok(Some(TableMetadata::new(
-                schema_json.to_string(),
-                partition_columns.unwrap_or_default(),
-                json_object_to_map(properties)?,
-            )));
-        }
-
-        Ok(None)
-    }
-
-    async fn lookup_existing_commit(
-        &self,
-        tx: &mut Transaction<'_, Postgres>,
-        marker: &AppTransaction,
-    ) -> Result<Option<CommitResult>, TxnLogError> {
-        let row = sqlx::query(
-            r#"
-            SELECT version,
-                   FLOOR(EXTRACT(EPOCH FROM committed_at) * 1000)::BIGINT AS committed_ms,
-                   operation_params
-            FROM dl_table_versions
-            WHERE table_id = $1
-              AND operation_params ->> 'app_id' = $2
-              AND operation_params ->> 'app_version' = $3
-            ORDER BY version DESC
-            LIMIT 1
-            "#,
-        )
-        .bind(self.table_id)
-        .bind(&marker.app_id)
-        .bind(marker.app_version.to_string())
-        .fetch_optional(tx.as_mut())
-        .await
-        .map_err(map_db_error)?;
-
-        let Some(row) = row else {
-            return Ok(None);
-        };
-
-        let version: i64 = row.try_get("version").map_err(map_db_error)?;
-        let committed_ms: i64 = row.try_get("committed_ms").map_err(map_db_error)?;
-        let params: Value = row.try_get("operation_params").map_err(map_db_error)?;
-        let action_count = params
-            .get("action_count")
-            .and_then(|value| value.as_u64())
-            .unwrap_or_default() as usize;
-
-        Ok(Some(CommitResult {
-            version,
-            timestamp_millis: committed_ms,
-            action_count,
-        }))
-    }
-
-    async fn load_current_version(
-        &self,
-        tx: &mut Transaction<'_, Postgres>,
-    ) -> Result<Version, TxnLogError> {
-        let version = sqlx::query_scalar::<_, Option<i64>>(
-            "SELECT current_version FROM dl_table_heads WHERE table_id = $1",
-        )
-        .bind(self.table_id)
-        .fetch_optional(tx.as_mut())
-        .await
-        .map_err(map_db_error)?;
-
-        Ok(version.flatten().unwrap_or(INITIAL_VERSION))
-    }
-
-    async fn insert_table_version(
-        &self,
-        tx: &mut Transaction<'_, Postgres>,
-        version: Version,
-        committed_at: DateTime<Utc>,
-        action_count: usize,
-        app_txn: &Option<AppTransaction>,
-    ) -> Result<(), TxnLogError> {
-        let mut params = JsonMap::new();
-        params.insert(
-            "action_count".into(),
-            Value::Number(JsonNumber::from(action_count as u64)),
-        );
-
-        if let Some(marker) = app_txn {
-            params.insert("app_id".into(), Value::String(marker.app_id.clone()));
-            params.insert(
-                "app_version".into(),
-                Value::Number(JsonNumber::from(marker.app_version)),
-            );
-        }
-
-        sqlx::query(
-            r#"
-            INSERT INTO dl_table_versions
-                (table_id, version, committed_at, committer, operation, operation_params)
-            VALUES ($1, $2, $3, $4, $5, $6)
-            "#,
-        )
-        .bind(self.table_id)
-        .bind(version)
-        .bind(committed_at)
-        .bind("deltalakedb-sql-writer")
-        .bind("WRITE")
-        .bind(Value::Object(params))
-        .execute(tx.as_mut())
-        .await
-        .map_err(map_db_error)?;
-
-        Ok(())
-    }
-
-    async fn insert_metadata(
-        &self,
-        tx: &mut Transaction<'_, Postgres>,
-        version: Version,
-        metadata: TableMetadata,
-    ) -> Result<(), TxnLogError> {
-        let schema_json = parse_schema_value(&metadata.schema_json)?;
-        let partition_columns = metadata.partition_columns;
-        let properties = Value::Object(map_to_json_map(&metadata.configuration));
-
-        sqlx::query(
-            r#"
-            INSERT INTO dl_metadata_updates
-                (table_id, version, schema_json, partition_columns, table_properties)
-            VALUES ($1, $2, $3, $4, $5)
-            "#,
-        )
-        .bind(self.table_id)
-        .bind(version)
-        .bind(schema_json)
-        .bind(partition_columns)
-        .bind(properties)
-        .execute(tx.as_mut())
-        .await
-        .map_err(map_db_error)?;
-
-        Ok(())
-    }
-
-    async fn insert_protocol(
-        &self,
-        tx: &mut Transaction<'_, Postgres>,
-        version: Version,
-        protocol: Protocol,
-    ) -> Result<(), TxnLogError> {
-        sqlx::query(
-            r#"
-            INSERT INTO dl_protocol_updates
-                (table_id, version, min_reader_version, min_writer_version)
-            VALUES ($1, $2, $3, $4)
-            "#,
-        )
-        .bind(self.table_id)
-        .bind(version)
-        .bind(protocol.min_reader_version as i32)
-        .bind(protocol.min_writer_version as i32)
-        .execute(tx.as_mut())
-        .await
-        .map_err(map_db_error)?;
-
-        Ok(())
-    }
-
-    async fn insert_add_file(
-        &self,
-        tx: &mut Transaction<'_, Postgres>,
-        version: Version,
-        file: ActiveFile,
-    ) -> Result<(), TxnLogError> {
-        let size_bytes: i64 = file
-            .size_bytes
-            .try_into()
-            .map_err(|_| TxnLogError::Invalid("file size exceeds i64".into()))?;
-        let partitions = Value::Object(map_to_json_map(&file.partition_values));
-
-        sqlx::query(
-            r#"
-            INSERT INTO dl_add_files
-                (table_id, version, path, size_bytes, partition_values, stats, data_change, modification_time)
-            VALUES ($1, $2, $3, $4, $5, NULL, TRUE, $6)
-            "#,
-        )
-        .bind(self.table_id)
-        .bind(version)
-        .bind(file.path)
-        .bind(size_bytes)
-        .bind(partitions)
-        .bind(file.modification_time)
-        .execute(tx.as_mut())
-        .await
-        .map_err(map_db_error)?;
-
-        Ok(())
-    }
-
-    async fn insert_remove_file(
-        &self,
-        tx: &mut Transaction<'_, Postgres>,
-        version: Version,
-        file: RemovedFile,
-    ) -> Result<(), TxnLogError> {
-        sqlx::query(
-            r#"
-            INSERT INTO dl_remove_files
-                (table_id, version, path, deletion_timestamp, data_change)
-            VALUES ($1, $2, $3, $4, TRUE)
-            "#,
-        )
-        .bind(self.table_id)
-        .bind(version)
-        .bind(file.path)
-        .bind(file.deletion_timestamp)
-        .execute(tx.as_mut())
-        .await
-        .map_err(map_db_error)?;
-
-        Ok(())
-    }
-
-    async fn insert_txn_marker(
-        &self,
-        tx: &mut Transaction<'_, Postgres>,
-        marker: &AppTransaction,
-        timestamp_millis: i64,
-    ) -> Result<(), TxnLogError> {
-        sqlx::query(
-            r#"
-            INSERT INTO dl_txn_actions(table_id, version, app_id, last_update)
-            VALUES ($1, $2, $3, $4)
-            ON CONFLICT (table_id, version, app_id) DO NOTHING
-            "#,
-        )
-        .bind(self.table_id)
-        .bind(marker.app_version)
-        .bind(&marker.app_id)
-        .bind(timestamp_millis)
-        .execute(tx.as_mut())
-        .await
-        .map_err(map_db_error)?;
-
-        Ok(())
-    }
-
-    async fn enqueue_mirror(
-        &self,
-        tx: &mut Transaction<'_, Postgres>,
-        version: Version,
-    ) -> Result<(), TxnLogError> {
-        sqlx::query(
-            r#"
-            INSERT INTO dl_mirror_status(table_id, version, status, attempts, updated_at)
-            VALUES ($1, $2, 'PENDING', 0, now())
-            ON CONFLICT (table_id, version)
-            DO UPDATE SET status = 'PENDING', attempts = 0, last_error = NULL, updated_at = now()
-            "#,
-        )
-        .bind(self.table_id)
-        .bind(version)
-        .execute(tx.as_mut())
-        .await
-        .map_err(map_db_error)?;
-
-        Ok(())
+        obs::record_commit_latency(self.table_id, start.elapsed(), action_count);
+        Ok(result)
     }
 }
 
@@ -834,8 +522,553 @@ impl TxnLogWriter for PostgresTxnLogWriter {
     }
 
     fn commit(&self, request: CommitRequest) -> Result<CommitResult, TxnLogError> {
+        let span = info_span!("sql_commit", table_id = %self.table_id);
+        let _guard = span.enter();
         self.block_on(self.commit_async(request))
     }
+}
+
+/// Builder for multi-table Postgres transactions.
+pub struct MultiTableTransactionBuilder {
+    runtime: Arc<Runtime>,
+    pool: PgPool,
+    tables: Vec<StagedTable>,
+}
+
+struct StagedTable {
+    table_id: Uuid,
+    request: CommitRequest,
+}
+
+impl PostgresTxnLogWriter {
+    /// Starts a multi-table transaction builder.
+    pub fn multi_table(&self) -> MultiTableTransactionBuilder {
+        MultiTableTransactionBuilder::new(self.runtime.clone(), self.pool.clone())
+    }
+}
+
+impl MultiTableTransactionBuilder {
+    fn new(runtime: Arc<Runtime>, pool: PgPool) -> Self {
+        Self {
+            runtime,
+            pool,
+            tables: Vec::new(),
+        }
+    }
+
+    /// Stages a commit for the provided writer's table.
+    pub fn stage_from_writer(
+        mut self,
+        writer: &PostgresTxnLogWriter,
+        request: CommitRequest,
+    ) -> Self {
+        self.tables.push(StagedTable {
+            table_id: writer.table_id,
+            request,
+        });
+        self
+    }
+
+    /// Stages a commit for an arbitrary table (must exist in `dl_tables`).
+    pub fn stage(
+        mut self,
+        _table_uri: impl Into<PathBuf>,
+        table_id: Uuid,
+        request: CommitRequest,
+    ) -> Self {
+        self.tables.push(StagedTable { table_id, request });
+        self
+    }
+
+    /// Commits all staged tables atomically.
+    pub fn commit(self) -> Result<Vec<(Uuid, CommitResult)>, TxnLogError> {
+        let runtime = self.runtime.clone();
+        runtime.block_on(self.commit_async())
+    }
+
+    async fn commit_async(self) -> Result<Vec<(Uuid, CommitResult)>, TxnLogError> {
+        if self.tables.is_empty() {
+            return Err(TxnLogError::Invalid(
+                "multi-table transaction requires at least one staged table".into(),
+            ));
+        }
+
+        let span = info_span!("multi_table_commit", table_count = self.tables.len());
+        let _guard = span.enter();
+        let start = Instant::now();
+        let mut tx = self.pool.begin().await.map_err(map_db_error)?;
+        let committed_at = Utc::now();
+        let timestamp_millis = committed_at.timestamp_millis();
+
+        for table in &self.tables {
+            ensure_head_row_for(&mut tx, table.table_id).await?;
+        }
+
+        let mut contexts = Vec::new();
+        for table in self.tables.into_iter() {
+            let StagedTable {
+                table_id,
+                mut request,
+            } = table;
+
+            if request_is_empty(&request) {
+                return Err(TxnLogError::Invalid(
+                    "each staged commit must include at least one action".into(),
+                ));
+            }
+
+            if request.app_transaction.is_some() {
+                return Err(TxnLogError::Invalid(
+                    "multi-table transactions do not yet support app_id idempotency".into(),
+                ));
+            }
+
+            let metadata_to_insert = prepare_metadata_for(
+                &mut tx,
+                table_id,
+                request.metadata.take(),
+                &mut request.set_properties,
+            )
+            .await?;
+
+            let action_count = compute_action_count(
+                metadata_to_insert.as_ref().is_some(),
+                request.protocol.is_some(),
+                request.add_actions.len(),
+                request.remove_actions.len(),
+                false,
+            );
+
+            contexts.push(PreparedTable {
+                table_id,
+                expected_version: request.expected_version,
+                new_version: request.expected_version + 1,
+                protocol: request.protocol,
+                metadata: metadata_to_insert,
+                add_actions: request.add_actions,
+                remove_actions: request.remove_actions,
+                action_count,
+            });
+        }
+
+        for ctx in &contexts {
+            let cas_rows = sqlx::query(
+                r#"
+                UPDATE dl_table_heads
+                SET current_version = $1, updated_at = $3
+                WHERE table_id = $2 AND current_version = $4
+                "#,
+            )
+            .bind(ctx.new_version)
+            .bind(ctx.table_id)
+            .bind(committed_at)
+            .bind(ctx.expected_version)
+            .execute(tx.as_mut())
+            .await
+            .map_err(map_db_error)?;
+
+            if cas_rows.rows_affected() == 0 {
+                let actual = load_current_version_for(&mut tx, ctx.table_id).await?;
+                tx.rollback().await.map_err(map_db_error)?;
+                obs::record_commit_failure(
+                    ctx.table_id,
+                    "concurrency conflict updating dl_table_heads",
+                );
+                return Err(TxnLogError::Concurrency {
+                    expected: ctx.expected_version,
+                    actual,
+                });
+            }
+        }
+
+        let mut results = Vec::new();
+        for ctx in &contexts {
+            insert_table_version_for(
+                &mut tx,
+                ctx.table_id,
+                ctx.new_version,
+                committed_at,
+                ctx.action_count,
+                &None,
+            )
+            .await?;
+
+            if let Some(metadata) = ctx.metadata.clone() {
+                insert_metadata_for(&mut tx, ctx.table_id, ctx.new_version, metadata).await?;
+            }
+
+            if let Some(protocol) = ctx.protocol.clone() {
+                insert_protocol_for(&mut tx, ctx.table_id, ctx.new_version, protocol).await?;
+            }
+
+            for file in ctx.add_actions.iter().cloned() {
+                insert_add_file_for(&mut tx, ctx.table_id, ctx.new_version, file).await?;
+            }
+
+            for file in ctx.remove_actions.iter().cloned() {
+                insert_remove_file_for(&mut tx, ctx.table_id, ctx.new_version, file).await?;
+            }
+
+            enqueue_mirror_for(&mut tx, ctx.table_id, ctx.new_version).await?;
+
+            results.push((
+                ctx.table_id,
+                CommitResult {
+                    version: ctx.new_version,
+                    timestamp_millis,
+                    action_count: ctx.action_count,
+                },
+            ));
+            obs::record_commit_latency(ctx.table_id, start.elapsed(), ctx.action_count);
+        }
+
+        tx.commit().await.map_err(map_db_error)?;
+        Ok(results)
+    }
+}
+
+struct PreparedTable {
+    table_id: Uuid,
+    expected_version: Version,
+    new_version: Version,
+    protocol: Option<Protocol>,
+    metadata: Option<TableMetadata>,
+    add_actions: Vec<ActiveFile>,
+    remove_actions: Vec<RemovedFile>,
+    action_count: usize,
+}
+
+async fn ensure_head_row_for(
+    tx: &mut Transaction<'_, Postgres>,
+    table_id: Uuid,
+) -> Result<(), TxnLogError> {
+    sqlx::query(
+        r#"
+        INSERT INTO dl_table_heads(table_id, current_version)
+        VALUES ($1, $2)
+        ON CONFLICT (table_id) DO NOTHING
+        "#,
+    )
+    .bind(table_id)
+    .bind(INITIAL_VERSION)
+    .execute(tx.as_mut())
+    .await
+    .map_err(map_db_error)?;
+    Ok(())
+}
+
+async fn prepare_metadata_for(
+    tx: &mut Transaction<'_, Postgres>,
+    table_id: Uuid,
+    metadata: Option<TableMetadata>,
+    set_properties: &mut HashMap<String, String>,
+) -> Result<Option<TableMetadata>, TxnLogError> {
+    if metadata.is_none() && set_properties.is_empty() {
+        return Ok(None);
+    }
+
+    let mut combined = match metadata {
+        Some(meta) => meta,
+        None => latest_metadata_for(tx, table_id)
+            .await?
+            .ok_or(TxnLogError::MissingMetadata)?,
+    };
+
+    for (key, value) in set_properties.drain() {
+        combined.configuration.insert(key, value);
+    }
+
+    Ok(Some(combined))
+}
+
+async fn latest_metadata_for(
+    tx: &mut Transaction<'_, Postgres>,
+    table_id: Uuid,
+) -> Result<Option<TableMetadata>, TxnLogError> {
+    let row = sqlx::query(
+        r#"
+        SELECT schema_json, partition_columns, table_properties
+        FROM dl_metadata_updates
+        WHERE table_id = $1
+        ORDER BY version DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(table_id)
+    .fetch_optional(tx.as_mut())
+    .await
+    .map_err(map_db_error)?;
+
+    if let Some(row) = row {
+        let schema_json: Value = row.try_get("schema_json").map_err(map_db_error)?;
+        let partition_columns: Option<Vec<String>> =
+            row.try_get("partition_columns").map_err(map_db_error)?;
+        let properties: Option<Value> = row.try_get("table_properties").map_err(map_db_error)?;
+
+        return Ok(Some(TableMetadata::new(
+            schema_json.to_string(),
+            partition_columns.unwrap_or_default(),
+            json_object_to_map(properties)?,
+        )));
+    }
+
+    Ok(None)
+}
+
+async fn lookup_existing_commit_for(
+    tx: &mut Transaction<'_, Postgres>,
+    table_id: Uuid,
+    marker: &AppTransaction,
+) -> Result<Option<CommitResult>, TxnLogError> {
+    let row = sqlx::query(
+        r#"
+        SELECT version,
+               FLOOR(EXTRACT(EPOCH FROM committed_at) * 1000)::BIGINT AS committed_ms,
+               operation_params
+        FROM dl_table_versions
+        WHERE table_id = $1
+          AND operation_params ->> 'app_id' = $2
+          AND operation_params ->> 'app_version' = $3
+        ORDER BY version DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(table_id)
+    .bind(&marker.app_id)
+    .bind(marker.app_version.to_string())
+    .fetch_optional(tx.as_mut())
+    .await
+    .map_err(map_db_error)?;
+
+    let Some(row) = row else {
+        return Ok(None);
+    };
+
+    let version: i64 = row.try_get("version").map_err(map_db_error)?;
+    let committed_ms: i64 = row.try_get("committed_ms").map_err(map_db_error)?;
+    let params: Value = row.try_get("operation_params").map_err(map_db_error)?;
+    let action_count = params
+        .get("action_count")
+        .and_then(|value| value.as_u64())
+        .unwrap_or_default() as usize;
+
+    Ok(Some(CommitResult {
+        version,
+        timestamp_millis: committed_ms,
+        action_count,
+    }))
+}
+
+async fn load_current_version_for(
+    tx: &mut Transaction<'_, Postgres>,
+    table_id: Uuid,
+) -> Result<Version, TxnLogError> {
+    let version = sqlx::query_scalar::<_, Option<i64>>(
+        "SELECT current_version FROM dl_table_heads WHERE table_id = $1",
+    )
+    .bind(table_id)
+    .fetch_optional(tx.as_mut())
+    .await
+    .map_err(map_db_error)?;
+
+    Ok(version.flatten().unwrap_or(INITIAL_VERSION))
+}
+
+async fn insert_table_version_for(
+    tx: &mut Transaction<'_, Postgres>,
+    table_id: Uuid,
+    version: Version,
+    committed_at: DateTime<Utc>,
+    action_count: usize,
+    app_txn: &Option<AppTransaction>,
+) -> Result<(), TxnLogError> {
+    let mut params = JsonMap::new();
+    params.insert(
+        "action_count".into(),
+        Value::Number(JsonNumber::from(action_count as u64)),
+    );
+
+    if let Some(marker) = app_txn {
+        params.insert("app_id".into(), Value::String(marker.app_id.clone()));
+        params.insert(
+            "app_version".into(),
+            Value::Number(JsonNumber::from(marker.app_version)),
+        );
+    }
+
+    sqlx::query(
+        r#"
+        INSERT INTO dl_table_versions
+            (table_id, version, committed_at, committer, operation, operation_params)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        "#,
+    )
+    .bind(table_id)
+    .bind(version)
+    .bind(committed_at)
+    .bind("deltalakedb-sql-writer")
+    .bind("WRITE")
+    .bind(Value::Object(params))
+    .execute(tx.as_mut())
+    .await
+    .map_err(map_db_error)?;
+
+    Ok(())
+}
+
+async fn insert_metadata_for(
+    tx: &mut Transaction<'_, Postgres>,
+    table_id: Uuid,
+    version: Version,
+    metadata: TableMetadata,
+) -> Result<(), TxnLogError> {
+    let schema_json = parse_schema_value(&metadata.schema_json)?;
+    let partition_columns = metadata.partition_columns;
+    let properties = Value::Object(map_to_json_map(&metadata.configuration));
+
+    sqlx::query(
+        r#"
+        INSERT INTO dl_metadata_updates
+            (table_id, version, schema_json, partition_columns, table_properties)
+        VALUES ($1, $2, $3, $4, $5)
+        "#,
+    )
+    .bind(table_id)
+    .bind(version)
+    .bind(schema_json)
+    .bind(partition_columns)
+    .bind(properties)
+    .execute(tx.as_mut())
+    .await
+    .map_err(map_db_error)?;
+
+    Ok(())
+}
+
+async fn insert_protocol_for(
+    tx: &mut Transaction<'_, Postgres>,
+    table_id: Uuid,
+    version: Version,
+    protocol: Protocol,
+) -> Result<(), TxnLogError> {
+    sqlx::query(
+        r#"
+        INSERT INTO dl_protocol_updates
+            (table_id, version, min_reader_version, min_writer_version)
+        VALUES ($1, $2, $3, $4)
+        "#,
+    )
+    .bind(table_id)
+    .bind(version)
+    .bind(protocol.min_reader_version as i32)
+    .bind(protocol.min_writer_version as i32)
+    .execute(tx.as_mut())
+    .await
+    .map_err(map_db_error)?;
+
+    Ok(())
+}
+
+async fn insert_add_file_for(
+    tx: &mut Transaction<'_, Postgres>,
+    table_id: Uuid,
+    version: Version,
+    file: ActiveFile,
+) -> Result<(), TxnLogError> {
+    let size_bytes: i64 = file
+        .size_bytes
+        .try_into()
+        .map_err(|_| TxnLogError::Invalid("file size exceeds i64".into()))?;
+    let partitions = Value::Object(map_to_json_map(&file.partition_values));
+
+    sqlx::query(
+        r#"
+        INSERT INTO dl_add_files
+            (table_id, version, path, size_bytes, partition_values, stats, data_change, modification_time)
+        VALUES ($1, $2, $3, $4, $5, NULL, TRUE, $6)
+        "#,
+    )
+    .bind(table_id)
+    .bind(version)
+    .bind(file.path)
+    .bind(size_bytes)
+    .bind(partitions)
+    .bind(file.modification_time)
+    .execute(tx.as_mut())
+    .await
+    .map_err(map_db_error)?;
+
+    Ok(())
+}
+
+async fn insert_remove_file_for(
+    tx: &mut Transaction<'_, Postgres>,
+    table_id: Uuid,
+    version: Version,
+    file: RemovedFile,
+) -> Result<(), TxnLogError> {
+    sqlx::query(
+        r#"
+        INSERT INTO dl_remove_files
+            (table_id, version, path, deletion_timestamp, data_change)
+        VALUES ($1, $2, $3, $4, TRUE)
+        "#,
+    )
+    .bind(table_id)
+    .bind(version)
+    .bind(file.path)
+    .bind(file.deletion_timestamp)
+    .execute(tx.as_mut())
+    .await
+    .map_err(map_db_error)?;
+
+    Ok(())
+}
+
+async fn insert_txn_marker_for(
+    tx: &mut Transaction<'_, Postgres>,
+    table_id: Uuid,
+    marker: &AppTransaction,
+    timestamp_millis: i64,
+) -> Result<(), TxnLogError> {
+    sqlx::query(
+        r#"
+        INSERT INTO dl_txn_actions(table_id, version, app_id, last_update)
+        VALUES ($1, $2, $3, $4)
+        ON CONFLICT (table_id, version, app_id) DO NOTHING
+        "#,
+    )
+    .bind(table_id)
+    .bind(marker.app_version)
+    .bind(&marker.app_id)
+    .bind(timestamp_millis)
+    .execute(tx.as_mut())
+    .await
+    .map_err(map_db_error)?;
+
+    Ok(())
+}
+
+async fn enqueue_mirror_for(
+    tx: &mut Transaction<'_, Postgres>,
+    table_id: Uuid,
+    version: Version,
+) -> Result<(), TxnLogError> {
+    sqlx::query(
+        r#"
+        INSERT INTO dl_mirror_status(table_id, version, status, attempts, updated_at)
+        VALUES ($1, $2, 'PENDING', 0, now())
+        ON CONFLICT (table_id, version)
+        DO UPDATE SET status = 'PENDING', attempts = 0, last_error = NULL, updated_at = now()
+        "#,
+    )
+    .bind(table_id)
+    .bind(version)
+    .execute(tx.as_mut())
+    .await
+    .map_err(map_db_error)?;
+
+    Ok(())
 }
 
 fn init_pool(

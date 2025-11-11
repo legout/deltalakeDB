@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use deltalakedb_core::txn_log::{ActiveFile, Protocol, TableMetadata};
+use deltalakedb_observability as obs;
 use serde_json::Value;
 use sqlx::{PgPool, Row};
 use tokio::time::sleep;
@@ -205,6 +206,7 @@ where
         })
         .collect::<Vec<_>>();
 
+        obs::set_mirror_backlog(rows.len() as u64);
         let now = Utc::now();
         let mut alerts = Vec::new();
         for row in rows {

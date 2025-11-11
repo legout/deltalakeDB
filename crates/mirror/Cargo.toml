@@ -23,6 +23,7 @@ async-trait = { workspace = true }
 arrow-array = { workspace = true }
 arrow-schema = { workspace = true }
 parquet = { workspace = true }
+deltalakedb-observability = { path = "../observability" }
 
 [dev-dependencies]
 tempfile = "3"
