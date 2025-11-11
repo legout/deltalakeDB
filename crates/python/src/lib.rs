@@ -22,6 +22,8 @@ pub mod deltalake_integration;
 pub mod write_operations;
 pub mod dataclasses;
 pub mod pydantic_models;
+pub mod migration;
+pub mod logging;
 
 use error::{DeltaLakeError, DeltaLakeErrorKind};
 
@@ -95,6 +97,20 @@ fn deltalakedb(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_class::<pydantic_models::ValidationUtils>()?;
     m.add_class::<pydantic_models::ConfigLoader>()?;
 
+    // Migration utilities
+    m.add_class::<migration::MigrationStrategy>()?;
+    m.add_class::<migration::MigrationStatus>()?;
+    m.add_class::<migration::TableMigrationResult>()?;
+    m.add_class::<migration::DeltaTableMigrator>()?;
+    m.add_class::<migration::MigrationUtils>()?;
+    m.add_class::<migration::MigrationCLI>()?;
+
+    // Logging framework
+    m.add_class::<logging::LoggerConfig>()?;
+    m.add_class::<logging::LogEntry>()?;
+    m.add_class::<logging::DeltaLogger>()?;
+    m.add_class::<logging::LoggingUtils>()?;
+
     // Functions
     m.add_function(wrap_pyfunction!(bindings::connect_to_table))?;
     m.add_function(wrap_pyfunction!(bindings::create_table))?;
@@ -133,6 +149,22 @@ fn deltalakedb(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(dataclasses::validate_table_data))?;
     m.add_function(wrap_pyfunction!(dataclasses::validate_commit_data))?;
     m.add_function(wrap_pyfunction!(dataclasses::validate_file_data))?;
+
+    // Configuration utility functions
+    m.add_function(wrap_pyfunction!(pydantic_models::ConfigLoader::load_config_file))?;
+    m.add_function(wrap_pyfunction!(pydantic_models::ConfigLoader::load_yaml_config))?;
+    m.add_function(wrap_pyfunction!(pydantic_models::ConfigLoader::load_toml_config))?;
+    m.add_function(wrap_pyfunction!(pydantic_models::ConfigLoader::save_yaml_config))?;
+    m.add_function(wrap_pyfunction!(pydantic_models::ConfigLoader::save_toml_config))?;
+    m.add_function(wrap_pyfunction!(pydantic_models::ConfigLoader::load_comprehensive_config))?;
+    m.add_function(wrap_pyfunction!(pydantic_models::ConfigLoader::generate_sample_configs))?;
+    m.add_function(wrap_pyfunction!(pydantic_models::ConfigLoader::validate_config_file))?;
+    m.add_function(wrap_pyfunction!(pydantic_models::ConfigLoader::get_config_schema))?;
+
+    // Logging utility functions
+    m.add_function(wrap_pyfunction!(logging::setup_logging))?;
+    m.add_function(wrap_pyfunction!(logging::create_logger))?;
+    m.add_function(wrap_pyfunction!(logging::initialize_logging_module))?;
 
     // Constants
     m.add("version", env!("CARGO_PKG_VERSION"))?;

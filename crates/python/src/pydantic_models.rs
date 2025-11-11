@@ -10,6 +10,11 @@ use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
+/// Helper function to check if an object has an attribute
+fn hasattr(obj: &PyAny, attr: &str) -> PyResult<bool> {
+    Ok(obj.hasattr(attr)?)
+}
+
 /// Import pydantic functionality - this will be available in Python
 const PYDANTIC_CODE: &str = r#"
 from typing import Optional, List, Dict, Any, Union, Literal
@@ -787,6 +792,120 @@ impl ConfigLoader {
         database_config_class.call((data,), None)
     }
 
+    /// Load configuration from TOML file with validation
+    #[staticmethod]
+    fn load_toml_config(py: Python, file_path: &str) -> PyResult<PyObject> {
+        // Try to import toml module
+        let toml = match py.import("toml") {
+            Ok(module) => module,
+            Err(_) => {
+                return Err(PyErr::new::<pyo3::exceptions::PyImportError, _>(
+                    "toml is required for TOML configuration. Install with: pip install tomli"
+                ));
+            }
+        };
+
+        let builtins = py.import("builtins")?;
+
+        // Open and read file
+        let file = builtins.call_method1("open", (file_path, "rb"))?;
+        let content = file.call_method0("read")?;
+
+        // Parse TOML content
+        let data = toml.call_method1("loads", (content,))?;
+
+        // Validate using Pydantic models
+        let pydantic = PydanticModels {};
+        pydantic.create_models(py)?;
+
+        let config_module = py.import("deltalakedb")?;
+        let database_config_class = config_module.getattr("DatabaseConfig")?;
+
+        // Try to validate as database config
+        database_config_class.call((data,), None)
+    }
+
+    /// Load configuration from file with auto-detection of format
+    #[staticmethod]
+    fn load_config_file(py: Python, file_path: &str) -> PyResult<PyObject> {
+        let os = py.import("os")?;
+        let pathlib = py.import("pathlib")?;
+
+        // Get file extension
+        let path_obj = pathlib.call_method1("Path", (file_path,))?;
+        let suffix = path_obj.getattr("suffix")?.extract::<String>()?;
+
+        match suffix.to_lowercase().as_str() {
+            ".yaml" | ".yml" => Self::load_yaml_config(py, file_path),
+            ".toml" => Self::load_toml_config(py, file_path),
+            ".json" => Self::load_json_config(py, file_path),
+            _ => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                format!("Unsupported configuration file format: {}. Supported formats: .yaml, .yml, .toml, .json", suffix)
+            ))
+        }
+    }
+
+    /// Save configuration to YAML file
+    #[staticmethod]
+    fn save_yaml_config(py: Python, config: &PyAny, file_path: &str) -> PyResult<()> {
+        // Try to import yaml module
+        let yaml = match py.import("yaml") {
+            Ok(module) => module,
+            Err(_) => {
+                return Err(PyErr::new::<pyo3::exceptions::PyImportError, _>(
+                    "PyYAML is required for YAML configuration. Install with: pip install PyYAML"
+                ));
+            }
+        };
+
+        let builtins = py.import("builtins")?;
+
+        // Convert config to dictionary if it's a Pydantic model
+        let config_dict = if hasattr(config, "dict")? {
+            config.call_method0("dict")?
+        } else {
+            config.to_object(py)
+        };
+
+        // Open and write file
+        let file = builtins.call_method1("open", (file_path, "w"))?;
+        yaml.call_method1("safe_dump", (config_dict, file))?;
+
+        Ok(())
+    }
+
+    /// Save configuration to TOML file
+    #[staticmethod]
+    fn save_toml_config(py: Python, config: &PyAny, file_path: &str) -> PyResult<()> {
+        // Try to import toml module
+        let toml = match py.import("tomli_w") {
+            Ok(module) => module,
+            Err(_) => {
+                return Err(PyErr::new::<pyo3::exceptions::PyImportError, _>(
+                    "tomli_w is required for TOML writing. Install with: pip install tomli_w"
+                ));
+            }
+        };
+
+        let builtins = py.import("builtins")?;
+
+        // Convert config to dictionary if it's a Pydantic model
+        let config_dict = if hasattr(config, "dict")? {
+            config.call_method0("dict")?
+        } else {
+            config.to_object(py)
+        };
+
+        // Serialize to TOML
+        let toml_content = toml.call_method1("dumps", (config_dict,))?;
+
+        // Open and write file
+        let file = builtins.call_method1("open", (file_path, "w"))?;
+        file.call_method1("write", (toml_content,))?;
+
+        Ok(())
+    }
+
     /// Load configuration from environment variables with validation
     #[staticmethod]
     fn load_env_config(py: Python, prefix: Option<&str>) -> PyResult<PyObject> {
@@ -833,5 +952,152 @@ impl ConfigLoader {
 
         // Try to validate as database config
         database_config_class.call((config_dict,), None)
+    }
+
+    /// Create a comprehensive configuration from multiple sources
+    #[staticmethod]
+    fn load_comprehensive_config(py: Python, config_file: Option<&str>, env_prefix: Option<&str>) -> PyResult<PyObject> {
+        let mut final_config = PyDict::new(py);
+
+        // 1. Load default configuration
+        let default_config = HashMap::from([
+            ("url", "sqlite:///:memory:"),
+            ("pool_size", 10),
+            ("timeout", 30),
+            ("ssl_enabled", false),
+        ]);
+
+        for (key, value) in default_config {
+            final_config.set_item(key, value)?;
+        }
+
+        // 2. Load from configuration file if provided
+        if let Some(file_path) = config_file {
+            let file_config = Self::load_config_file(py, file_path)?;
+            if hasattr(&file_config, "dict")? {
+                let file_dict = file_config.call_method0("dict")?;
+                for (key, value) in file_dict.downcast::<PyDict>()? {
+                    final_config.set_item(key, value)?;
+                }
+            }
+        }
+
+        // 3. Override with environment variables
+        let env_config = Self::load_env_config(py, env_prefix)?;
+        if hasattr(&env_config, "dict")? {
+            let env_dict = env_config.call_method0("dict")?;
+            for (key, value) in env_dict.downcast::<PyDict>()? {
+                final_config.set_item(key, value)?;
+            }
+        }
+
+        // 4. Validate the final configuration
+        let pydantic = PydanticModels {};
+        pydantic.create_models(py)?;
+
+        let config_module = py.import("deltalakedb")?;
+        let database_config_class = config_module.getattr("DatabaseConfig")?;
+
+        database_config_class.call((final_config,), None)
+    }
+
+    /// Generate sample configuration files
+    #[staticmethod]
+    fn generate_sample_configs(py: Python, output_dir: &str) -> PyResult<()> {
+        let pathlib = py.import("pathlib")?;
+        let builtins = py.import("builtins")?;
+
+        // Create output directory if it doesn't exist
+        let path_obj = pathlib.call_method1("Path", (output_dir,))?;
+        path_obj.call_method1("mkdir", (py.None(), py.None(), true))?;
+
+        // Sample database configuration
+        let sample_db_config = PyDict::new(py);
+        sample_db_config.set_item("url", "postgresql://user:password@localhost:5432/deltalake")?;
+        sample_db_config.set_item("pool_size", 20)?;
+        sample_db_config.set_item("timeout", 60)?;
+        sample_db_config.set_item("ssl_enabled", true)?;
+        sample_db_config.set_item("ssl_cert", "/path/to/cert.pem")?;
+
+        // Sample write configuration
+        let sample_write_config = PyDict::new(py);
+        sample_write_config.set_item("mode", "append")?;
+        sample_write_config.set_item("partition_by", vec!["year", "month"])?;
+        sample_write_config.set_item("overwrite_schema", false)?;
+        sample_write_config.set_item("allow_schema_evolution", true)?;
+
+        // Sample table configuration
+        let sample_table_config = PyDict::new(py);
+        sample_table_config.set_item("name", "sales_data")?;
+        sample_table_config.set_item("description", "Sales transaction data")?;
+        sample_table_config.set_item("partition_columns", vec!["year", "region"])?;
+        sample_table_config.set_item("z_order_columns", vec!["customer_id", "transaction_date"])?;
+
+        // Save configurations in different formats
+        let yaml_path = format!("{}/sample_database.yaml", output_dir);
+        let toml_path = format!("{}/sample_database.toml", output_dir);
+        let json_path = format!("{}/sample_database.json", output_dir);
+
+        Self::save_yaml_config(py, sample_db_config, &yaml_path)?;
+        Self::save_toml_config(py, sample_db_config, &toml_path)?;
+
+        let json_file = builtins.call_method1("open", (json_path, "w"))?;
+        let json_module = py.import("json")?;
+        json_module.call_method1("dump", (sample_db_config, json_file))?;
+
+        println!("Sample configuration files generated in: {}", output_dir);
+        println!("- sample_database.yaml");
+        println!("- sample_database.toml");
+        println!("- sample_database.json");
+
+        Ok(())
+    }
+
+    /// Validate configuration file format
+    #[staticmethod]
+    fn validate_config_file(py: Python, file_path: &str) -> PyResult<bool> {
+        let pathlib = py.import("pathlib")?;
+
+        // Check if file exists
+        let path_obj = pathlib.call_method1("Path", (file_path,))?;
+        if !path_obj.call_method0("exists")?.extract::<bool>()? {
+            return Err(PyErr::new::<pyo3::exceptions::PyFileNotFoundError, _>(
+                format!("Configuration file not found: {}", file_path)
+            ));
+        }
+
+        // Try to load and validate the file
+        match Self::load_config_file(py, file_path) {
+            Ok(_) => Ok(true),
+            Err(_) => Ok(false)
+        }
+    }
+
+    /// Get configuration schema
+    #[staticmethod]
+    fn get_config_schema(py: Python, config_type: &str) -> PyResult<PyObject> {
+        let pydantic = PydanticModels {};
+        pydantic.create_models(py)?;
+
+        let config_module = py.import("deltalakedb")?;
+
+        let class_name = match config_type.to_lowercase().as_str() {
+            "database" => "DatabaseConfig",
+            "write" => "WriteConfig",
+            "transaction" => "TransactionConfig",
+            "table" => "TableConfig",
+            _ => return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                format!("Unknown configuration type: {}. Available types: database, write, transaction, table", config_type)
+            ))
+        };
+
+        let config_class = config_module.getattr(class_name)?;
+
+        if hasattr(&config_class, "schema_json")? {
+            config_class.call_method0("schema_json")
+        } else {
+            // Fallback: return class documentation
+            config_class.getattr("__doc__")
+        }
     }
 }
