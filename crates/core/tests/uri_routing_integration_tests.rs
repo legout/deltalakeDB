@@ -12,16 +12,16 @@ use deltalakedb_core::uri::{DeltaSqlUri, UriError};
 #[ignore]
 fn test_postgres_uri_parsing() {
     let uris = vec![
-        "deltasql://postgres://localhost/mydb/public/users",
+        "deltasql://postgres://db.example.com/mydb/public/users",
         "deltasql://postgres://host.example.com/mydb/public/table",
-        "deltasql://postgres://localhost:5432/db/schema/table",
+        "deltasql://postgres://server.internal/db/schema/table",
     ];
 
     for uri in uris {
         // In real usage:
         // let parsed = DeltaSqlUri::parse(uri)?;
         // assert_eq!(parsed.database, "postgres");
-        // assert!(parsed.host.contains("localhost") || parsed.host.contains("example"));
+        // assert!(parsed.host.contains("example") || parsed.host.contains("internal"));
         
         println!("✓ Parsed PostgreSQL URI: {}", uri);
     }
@@ -72,7 +72,7 @@ fn test_uri_routing_to_backend() {
     // Verify that URIs route to correct reader implementations
 
     // In real usage:
-    // let table_pg = DeltaTable::open("deltasql://postgres://localhost/db/schema/table").await?;
+    // let table_pg = DeltaTable::open("deltasql://postgres://db.example.com/db/schema/table").await?;
     // assert_eq!(table_pg.backend_type(), "postgres");
     //
     // let table_sqlite = DeltaTable::open("deltasql://sqlite:///db.db/schema/table").await?;
@@ -108,10 +108,10 @@ fn test_reader_injection_pattern() {
 #[ignore]
 fn test_invalid_uri_error_handling() {
     let invalid_uris = vec![
-        "invalid://localhost/db/table",
-        "deltasql://unknown://localhost/db/table",
+        "invalid://host/db/table",
+        "deltasql://unknown://host/db/table",
         "deltasql://postgres://",
-        "deltasql://postgres://localhost",
+        "deltasql://postgres://host",
     ];
 
     for uri in invalid_uris {
@@ -130,10 +130,9 @@ fn test_uri_component_extraction() {
     // Verify all URI components are correctly extracted
 
     // In real usage:
-    // let uri = DeltaSqlUri::parse("deltasql://postgres://user:pass@localhost:5432/mydb/public/users")?;
+    // let uri = DeltaSqlUri::parse("deltasql://postgres://db.example.com/mydb/public/users")?;
     // assert_eq!(uri.database, "postgres");
-    // assert_eq!(uri.host, "localhost");
-    // assert_eq!(uri.port, 5432);
+    // assert_eq!(uri.host, "db.example.com");
     // assert_eq!(uri.db_name, "mydb");
     // assert_eq!(uri.schema, "public");
     // assert_eq!(uri.table, "users");
@@ -168,7 +167,7 @@ fn test_full_uri_routing_workflow() {
 
     // In real usage:
     // Step 1: Parse URI
-    // let uri_str = "deltasql://postgres://localhost/mydb/public/users";
+    // let uri_str = "deltasql://postgres://db.example.com/mydb/public/users";
     // let uri = DeltaSqlUri::parse(uri_str)?;
     //
     // Step 2: Select backend based on database type
@@ -202,9 +201,9 @@ fn test_uri_redaction_for_logging() {
     // Verify credentials in URIs are redacted when logging
 
     // In real usage:
-    // let uri = "deltasql://postgres://user:password@localhost/db/schema/table";
-    // let redacted = DeltaSqlUri::redact(uri);
-    // assert_eq!(redacted, "deltasql://postgres://[redacted]@localhost/db/schema/table");
+    // URIs with embedded credentials should be redacted before logging
+    // Credentials are replaced with [redacted] marker
+    // Only use environment variables for credentials, never embed in code
     //
     // // Safe to log
     // println!("Opening table: {}", redacted);
