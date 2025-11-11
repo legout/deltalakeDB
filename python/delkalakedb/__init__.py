@@ -6,6 +6,16 @@ import uuid
 
 __version__ = "0.0.0"
 
+# Import migration classes
+from .migration import (
+    MigrationManager,
+    MigrationConfig,
+    MigrationResult,
+    MigrationStatus,
+)
+from .validation import ValidationManager, ValidationResult
+from .discovery import TableDiscovery, DeltaTable
+
 
 def is_rust_extension_available() -> bool:
     """Check if the Rust extension is available."""
@@ -469,4 +479,13 @@ __all__ = [
     # High-level classes
     "MultiTableClient",
     "TableActionsBuilder",
+    # Migration classes
+    "MigrationManager",
+    "MigrationConfig",
+    "MigrationResult",
+    "MigrationStatus",
+    "ValidationManager",
+    "ValidationResult",
+    "TableDiscovery",
+    "DeltaTable",
 ]
