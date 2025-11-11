@@ -30,6 +30,10 @@ pub mod memory_optimization;
 pub mod async_io;
 pub mod multi_table_transactions;
 pub mod testing;
+pub mod mirror_integration;
+pub mod distributed_locking;
+pub mod transaction_recovery;
+pub mod cross_table_validation;
 
 use error::{DeltaLakeError, DeltaLakeErrorKind};
 
@@ -170,6 +174,37 @@ fn deltalakedb(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_class::<testing::TestAssertions>()?;
     m.add_class::<testing::TestDataGenerator>()?;
 
+    // Mirror integration framework
+    m.add_class::<mirror_integration::MirrorCoordinationStatus>()?;
+    m.add_class::<mirror_integration::MirrorCoordinationConfig>()?;
+    m.add_class::<mirror_integration::MirrorTask>()?;
+    m.add_class::<mirror_integration::IntegratedMultiTableTransaction>()?;
+    m.add_class::<mirror_integration::IntegratedTransactionManager>()?;
+
+    // Distributed locking framework
+    m.add_class::<distributed_locking::LockType>()?;
+    m.add_class::<distributed_locking::LockRequest>()?;
+    m.add_class::<distributed_locking::AcquiredLock>()?;
+    m.add_class::<distributed_locking::DeadlockDetectionResult>()?;
+    m.add_class::<distributed_locking::DistributedLockManager>()?;
+
+    // Transaction recovery framework
+    m.add_class::<transaction_recovery::RecoveryStatus>()?;
+    m.add_class::<transaction_recovery::RecoveryLevel>()?;
+    m.add_class::<transaction_recovery::RecoveryPoint>()?;
+    m.add_class::<transaction_recovery::RecoveryResult>()?;
+    m.add_class::<transaction_recovery::RecoveryConfig>()?;
+    m.add_class::<transaction_recovery::TransactionRecoveryManager>()?;
+
+    // Cross-table validation framework
+    m.add_class::<cross_table_validation::ValidationStatus>()?;
+    m.add_class::<cross_table_validation::ValidationRuleType>()?;
+    m.add_class::<cross_table_validation::ValidationConstraint>()?;
+    m.add_class::<cross_table_validation::ValidationResult>()?;
+    m.add_class::<cross_table_validation::ValidationSummary>()?;
+    m.add_class::<cross_table_validation::ValidationConfig>()?;
+    m.add_class::<cross_table_validation::CrossTableValidator>()?;
+
     // Functions
     m.add_function(wrap_pyfunction!(bindings::connect_to_table))?;
     m.add_function(wrap_pyfunction!(bindings::create_table))?;
@@ -250,6 +285,19 @@ fn deltalakedb(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(testing::run_comprehensive_tests))?;
     m.add_function(wrap_pyfunction!(testing::generate_test_coverage_report))?;
     m.add_function(wrap_pyfunction!(testing::run_performance_benchmarks))?;
+
+    // Mirror integration utility functions
+    m.add_function(wrap_pyfunction!(mirror_integration::create_integrated_multi_table_transaction))?;
+    m.add_function(wrap_pyfunction!(mirror_integration::create_integrated_transaction_manager))?;
+
+    // Distributed locking utility functions
+    m.add_function(wrap_pyfunction!(distributed_locking::create_distributed_lock_manager))?;
+
+    // Transaction recovery utility functions
+    m.add_function(wrap_pyfunction!(transaction_recovery::create_transaction_recovery_manager))?;
+
+    // Cross-table validation utility functions
+    m.add_function(wrap_pyfunction!(cross_table_validation::create_cross_table_validator))?;
 
     // Constants
     m.add("version", env!("CARGO_PKG_VERSION"))?;
