@@ -27,6 +27,7 @@ pub mod logging;
 pub mod lazy_loading;
 pub mod caching;
 pub mod memory_optimization;
+pub mod async_io;
 
 use error::{DeltaLakeError, DeltaLakeErrorKind};
 
@@ -139,6 +140,15 @@ fn deltalakedb(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_class::<memory_optimization::MemoryOptimizedFileList>()?;
     m.add_class::<memory_optimization::MemoryOptimizationUtils>()?;
 
+    // Async I/O framework
+    m.add_class::<async_io::AsyncTaskStatus>()?;
+    m.add_class::<async_io::AsyncOperationType>()?;
+    m.add_class::<async_io::AsyncTaskConfig>()?;
+    m.add_class::<async_io::AsyncTaskResult>()?;
+    m.add_class::<async_io::AsyncIOExecutor>()?;
+    m.add_class::<async_io::AsyncDeltaLakeOperations>()?;
+    m.add_class::<async_io::AsyncUtils>()?;
+
     // Functions
     m.add_function(wrap_pyfunction!(bindings::connect_to_table))?;
     m.add_function(wrap_pyfunction!(bindings::create_table))?;
@@ -205,6 +215,10 @@ fn deltalakedb(_py: Python, m: &PyModule) -> PyResult<()> {
     // Memory optimization utility functions
     m.add_function(wrap_pyfunction!(memory_optimization::create_memory_optimized_file_list))?;
     m.add_function(wrap_pyfunction!(memory_optimization::get_memory_optimization_recommendations))?;
+
+    // Async I/O utility functions
+    m.add_function(wrap_pyfunction!(async_io::create_async_executor))?;
+    m.add_function(wrap_pyfunction!(async_io::create_async_deltalake_operations))?;
 
     // Constants
     m.add("version", env!("CARGO_PKG_VERSION"))?;
