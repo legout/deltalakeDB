@@ -1335,4 +1335,82 @@ if backups:
     recovery.restore_from_backup(latest_backup)
 ```
 
+## Monitoring and Alerting
+
+### Temporary External Inconsistency Window
+
+Multi-table commits land atomically in the SQL catalog, but `_delta_log/` mirroring fan-outs per table.
+External engines that read directly from object storage can therefore observe divergent table versions
+until all mirror workers finish. Instrument and document this window clearly for operators:
+
+- Budget no more than 60 seconds for the window; target p95 completion under 5 seconds.
+- Treat `IN_FLIGHT` entries that are older than the SLO as lag violations and page the on-call.
+- Communicate the expected mirror completion time in runbooks so downstream teams know when it is
+safe to rely on `_delta_log/` for multi-table atomicity.
+
+### Mirror Lag, Status, and Parity Metrics
+
+Each `(table_id, version)` transition writes to the `dl_mirror_status` table and emits the following metrics:
+
+- `mirror_status{table_id,version}`: 0=`IN_FLIGHT`, 1=`COMPLETE`, 2=`FAILED`.
+- `mirror_lag_seconds{table_id,version}`: difference between DB commit time and last successful mirror write.
+- `mirror_reconciliation_attempts_total{table_id,version}`: counter incremented on each retry.
+- `mirror_parity_drift_total{table_id,version}`: counter for JSON/Checkpoint mismatches detected post-commit.
+
+`dl diff` now emits machine-readable metrics for every table you validate. Schedule it via
+cron, CI, or orchestration systems to produce Prometheus/JSON payloads:
+
+```bash
+dl diff \
+  --database /var/lib/deltalake/metadata.sqlite \
+  --table-id <uuid> \
+  --log-dir /tables/sales/_delta_log \
+  --lag-threshold-seconds 5 \
+  --max-drift-files 0 \
+  --metrics-format prometheus \
+  --metrics-output /var/lib/deltalake/metrics/sales.prom
+```
+
+Sample output:
+
+```
+dl_mirror_lag_seconds{table_id="b1b..."} 0.8
+dl_mirror_status{table_id="b1b...",version="128"} 1
+dl_mirror_reconciliation_attempts_total{table_id="b1b...",version="128"} 0
+dl_file_drift_count{table_id="b1b..."} 0
+dl_metadata_drift{table_id="b1b..."} 0
+dl_protocol_drift{table_id="b1b..."} 0
+dl_version_delta{table_id="b1b..."} 0
+```
+
+Ship these metrics through Prometheus `file_sd`, StatsD, or your preferred agent so
+dashboards can chart lag, parity, and version deltas per table.
+
+### Alert Thresholds and Exit Codes
+
+| Metric/Signal | Threshold | Response |
+|---------------|-----------|----------|
+| `mirror_lag_seconds` | > 5 seconds for longer than 1 minute | Page on-call, inspect mirror workers |
+| `file_drift_count` | > 0 | Stop cutovers, investigate parity diff |
+| `metadata_drift` or `protocol_drift` | == 1 | Treat as correctness incident |
+| CLI exit code | `2` (drift) / `3` (lag only) | Fail the pipeline or raise an alert |
+
+### CI/CD Integration
+
+Add a "Parity" stage to your release pipelines:
+
+```yaml
+steps:
+  - name: Parity Check
+    run: |
+      dl diff \
+        --database /var/lib/deltalake/metadata.sqlite \
+        --table-id $TABLE_ID \
+        --log-dir $DELTA_LOG \
+        --format json \
+        --json-output artifacts/diff.json
+```
+
+Archive the JSON artifact so incident responders can review the precise drift details.
+
 This comprehensive deployment and operations guide provides SQL-Backed Delta Lake users with everything needed for production deployments, including database setup, application deployment, high availability configurations, backup strategies, and operational procedures. The guide includes practical scripts, configuration examples, and best practices for maintaining a robust and scalable Delta Lake deployment.
