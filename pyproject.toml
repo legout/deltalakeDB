@@ -23,6 +23,9 @@ dev = [
   "pytest>=8.0.0",
 ]
 
+[project.scripts]
+dl = "delkalakedb.cli:main"
+
 [tool.ruff]
 target-version = "py312"
 line-length = 88

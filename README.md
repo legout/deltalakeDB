@@ -8,6 +8,29 @@ SQL-backed metadata plane for Delta Lake.
 
 `deltalakedb` provides a SQL-backed metadata plane for Delta Lake while preserving full Delta compatibility by mirroring commits to `_delta_log/` for external engines. It improves metadata read latency and enables multi-table ACID semantics using a relational database as the source of truth.
 
+## Migration CLI
+
+The `dl` CLI (installed with this package) bootstraps SQL metadata from existing Delta tables and validates parity:
+
+```bash
+# Bootstrap SQL metadata into a local SQLite catalog
+dl import \
+  --database /tmp/metadata.sqlite \
+  --log-dir /data/delta/my_table/_delta_log \
+  --table-location s3://bucket/path/my_table
+
+# Compare SQL-derived state against _delta_log with alert thresholds
+dl diff \
+  --database /tmp/metadata.sqlite \
+  --table-id <uuid-from-import> \
+  --log-dir /data/delta/my_table/_delta_log \
+  --lag-threshold-seconds 5 \
+  --max-drift-files 0 \
+  --metrics-format prometheus
+```
+
+Use `--mode full-history` during import to replay every JSON commit when historical metadata is required. Diff exits with code `2` when drift is detected and `3` when only the lag SLO is breached, enabling CI/CD gates.
+
 ## Development
 
 This project uses:

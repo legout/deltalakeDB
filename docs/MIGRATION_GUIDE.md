@@ -171,6 +171,33 @@ except Exception as e:
 
 ### Phase 3: Migration Execution
 
+> **New (Nov 2025):** The lightweight `dl` CLI can bootstrap metadata directly from an
+> existing `_delta_log` without authoring bespoke migration scripts. Use it when you
+> only need to hydrate the SQL catalog and continue mirroring via `_delta_log`.
+
+#### Option A: CLI-driven import
+
+```bash
+# 1. Bootstrap SQL catalog from the latest checkpoint + JSON commits
+dl import \
+  --database /var/lib/deltalake/metadata.sqlite \
+  --log-dir /tables/sales/_delta_log \
+  --table-location s3://warehouse/sales \
+  --mode fast  # use full-history to replay every JSON file
+
+# 2. Record the emitted table_id and re-run to prove idempotence
+dl import \
+  --database /var/lib/deltalake/metadata.sqlite \
+  --log-dir /tables/sales/_delta_log \
+  --table-location s3://warehouse/sales \
+  --table-id <uuid-from-step-1>
+```
+
+The command reads the latest checkpoint (when available) before replaying JSON commits,
+populates every `dl_*` table, and records the run in `dl_import_runs` for auditability.
+Use `--json-output import.json` to capture machine-readable summaries for change
+management systems.
+
 #### Single Table Migration
 
 ```python
@@ -264,6 +291,72 @@ migrate_directory("/path/to/delta/tables", sql_config)
 ```
 
 ### Phase 4: Validation
+
+You can still run the SDK-based validation code below, but most teams rely on the
+drift tooling baked into the CLI:
+
+```bash
+# Compare SQL-derived snapshot with _delta_log truth
+dl diff \
+  --database /var/lib/deltalake/metadata.sqlite \
+  --table-id <uuid> \
+  --log-dir /tables/sales/_delta_log \
+  --lag-threshold-seconds 5 \
+  --max-drift-files 0 \
+  --metrics-format prometheus \
+  --metrics-output /tmp/sales_metrics.prom
+
+# Exit codes
+# 0 -> parity holds and lag within threshold
+# 2 -> drift detected (files, metadata, or protocol mismatch)
+# 3 -> only the lag SLO was breached (useful for observability alerts)
+```
+
+Point CI/CD jobs at `dl diff` to block promotion whenever parity fails. The command
+also emits machine- and human-readable summaries (`--format json`), making it simple to
+push drift reports into runbooks or ticketing systems.
+
+### Phase 5: Writer Cutover to `deltasql://`
+
+1. **Freeze old writers.** Pause upstream jobs for the target table and confirm that
+   `_delta_log` has finished flushing outstanding commits.
+2. **Final parity check.** Run `dl diff` and ensure the exit status is `0`.
+3. **Switch writer URIs.** Reconfigure applications to use `deltasql://` endpoints, for
+   example `deltasql://postgresql://user:pass@metadata-db:5432/catalog.sales`. Writers
+   continue to mirror JSON/Parquet artifacts for external engines.
+4. **Post-cutover validation.** Issue another diff immediately after the first SQL-backed
+   commit:
+
+```bash
+dl diff \
+  --database /var/lib/deltalake/metadata.sqlite \
+  --table-id <uuid> \
+  --log-dir /tables/sales/_delta_log \
+  --lag-threshold-seconds 5 \
+  --max-drift-files 0 \
+  --metrics-format json
+```
+
+5. **Automate.** Embed the command into release pipelines so parity must be green
+   before the cutover checklist is signed off.
+
+### Phase 6: Safe Rollback to File-backed Writers
+
+If drift, regressions, or infra issues appear, you can revert to file-backed writers in
+minutes:
+
+1. Run `dl diff --format human` to capture the current divergence and attach the output
+   to the incident ticket.
+2. Set writers back to their prior `file://`/`s3://` URIs. Do **not** disable SQL
+   mirroring; it remains authoritative when you retry the cutover.
+3. Use the most recent healthy `_delta_log` version as the rollback target and confirm
+   external engines see the expected table version.
+4. Once traffic is back on file-backed writers, either:
+   - Re-run `dl import --table-id <uuid>` to catch up the SQL catalog, or
+   - Archive the stalled run via `dl diff --json-output rollback.json` for audit
+     purposes and perform a fresh bootstrap when ready.
+5. Document the root cause and any follow-up tasks in this guide before attempting the
+   next cutover.
 
 ```python
 import deltalakedb as dl
@@ -568,74 +661,58 @@ print(f"   - Peak memory: {metrics.peak_memory_mb:.1f} MB")
 
 ## Rollback Procedures
 
-### 1. Quick Rollback
+### 1. Controlled Rollback to File-backed Writers
 
-If migration fails or validation doesn't pass:
+1. Capture the current state for auditing:
 
-```python
-import deltalakedb as dl
-
-# Rollback migrated table
-migrator = dl.DeltaTableMigrator(source_uri, target_config)
-
-rollback_result = migrator.rollback_migration("failed_table")
-
-if rollback_result.success:
-    print("✅ Rollback completed successfully")
-    print("   Original table is now accessible again")
-else:
-    print(f"❌ Rollback failed: {rollback_result.error_message}")
+```bash
+dl diff \
+  --database /var/lib/deltalake/metadata.sqlite \
+  --table-id <uuid> \
+  --log-dir /tables/sales/_delta_log \
+  --format json \
+  --json-output rollback_report.json
 ```
 
-### 2. Manual Rollback
+2. Stop SQL-backed writers and repoint workloads to their previous `file://`/`s3://`
+   URIs.
+3. Confirm `_delta_log` is the source of truth (external readers should see the expected
+   version).
+4. Leave the SQL catalog in place; once the incident is resolved re-run `dl import` with
+   the existing `--table-id` to catch up.
 
-If automated rollback fails:
+### 2. Restore from Backup When `_delta_log` Is Corrupted
 
-```python
-# 1. Stop any running processes
-# 2. Restore from backup
-import shutil
-import os
+If the object store copy is damaged, restore from your Delta backups and mirror back to
+SQL:
 
-backup_path = "/backup/delta_tables_backup"
-target_path = "/path/to/production/tables"
-
-# Restore original table
-shutil.rmtree(f"{target_path}/failed_table")
-shutil.copytree(f"{backup_path}/failed_table", f"{target_path}/failed_table")
-
-# 3. Clean up SQL database (optional)
-sql_config = dl.SqlConfig("postgresql://user:pass@localhost:5432/db")
-conn = dl.SqlConnection(sql_config)
-
-# Drop migrated metadata (careful!)
-conn.execute("DROP TABLE IF EXISTS failed_table_metadata")
-conn.execute("DROP TABLE IF EXISTS failed_table_commits")
-
-print("✅ Manual rollback completed")
+```bash
+rsync -a /backups/delta/sales /tables/sales
+dl import --database /var/lib/deltalake/metadata.sqlite \
+  --log-dir /tables/sales/_delta_log \
+  --table-location s3://warehouse/sales \
+  --table-id <uuid>
 ```
 
-### 3. Switch Back to Original
+### 3. Hybrid Access Pattern During Recovery
 
-To temporarily switch back to original storage:
+Applications can temporarily fall back to the file-backed path while SQL issues are
+investigated:
 
 ```python
-import deltalakedb as dl
+from deltalake import DeltaTable
 
-# Create hybrid configuration that can switch back
-bridge = dl.DeltaLakeBridge()
+file_backed = DeltaTable("/tables/sales")
 
-# This allows seamless switching between storage backends
-original_table = bridge.create_compatible_table("file:///path/to/original")
-sql_backed_table = dl.connect_to_table("deltasql://pg://localhost/db.table")
-
-# Use original if SQL backend has issues
-try:
-    data = sql_backed_table.snapshot().to_pyarrow_table()
-except Exception as e:
-    print(f"⚠️  SQL backend unavailable, using original: {e}")
-    data = original_table.to_pyarrow_table()
+def read_with_fallback(sql_reader):
+    try:
+        return sql_reader.read_latest()
+    except Exception:
+        return file_backed.to_pyarrow_table()
 ```
+
+Once SQL writers are healthy, repeat the cutover checklist from Phase 5 to resume normal
+operations.
 
 ## Best Practices
 

@@ -269,6 +269,25 @@ results = asyncio.run(async_operations())
 
 ## Examples
 
+### 🚀 Basic Example (Getting Started)
+
+**New to DeltaLake DB Python?** Start with our basic example for a quick introduction:
+
+```bash
+# Run the basic example
+python examples/basic_example.py
+```
+
+The basic example demonstrates:
+- ✅ Zero setup (uses in-memory SQLite)
+- ✅ Core workflow: create table → write data → read data  
+- ✅ Clear error handling and documentation
+- ✅ Runs in under 5 seconds
+
+[📄 View Basic Example](examples/basic_example.py)
+
+---
+
 ### E-commerce Data Pipeline
 
 ```python
