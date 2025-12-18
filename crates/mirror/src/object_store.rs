@@ -37,7 +37,7 @@ impl ObjectStore for LocalFsObjectStore {
         let mut file = OpenOptions::new()
             .create_new(true)
             .write(true)
-            .open(&path)
+            .open(path)
             .map_err(|err| MirrorError::ObjectStore(err.to_string()))?;
         file.write_all(bytes)
             .and_then(|_| file.sync_all())

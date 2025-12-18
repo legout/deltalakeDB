@@ -1,0 +1,1 @@
+{"rustc":2497478894085024098,"features":"","target":0,"profile":0,"path":0,"deps":[[4050316729776955098,"build_script_build",false,11276725692218308573]],"local":[{"RerunIfChanged":{"output":"debug/build/anyhow-5d3cc7990f32ad22/output","paths":["src/nightly.rs"]}},{"RerunIfEnvChanged":{"var":"RUSTC_BOOTSTRAP","val":null}}],"rustflags":[],"metadata":0,"config":0,"compile_kind":0}

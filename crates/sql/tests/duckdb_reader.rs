@@ -1,3 +1,5 @@
+#![cfg(feature = "duckdb")]
+
 use chrono::{Duration, Utc};
 use deltalakedb_core::txn_log::TxnLogReader;
 use deltalakedb_sql::DuckdbTxnLogReader;

@@ -820,13 +820,13 @@ fn read_checkpoint(log_dir: &Path) -> Result<Option<VersionActions>> {
         .with_context(|| format!("failed to open {}", file_path.display()))?;
     let builder = ParquetRecordBatchReaderBuilder::try_new(file)
         .map_err(|err| anyhow!("failed to read checkpoint parquet: {err}"))?;
-    let mut reader = builder.build().map_err(|err| anyhow!("{err}"))?;
+    let reader = builder.build().map_err(|err| anyhow!("{err}"))?;
 
     let mut protocol = None;
     let mut metadata = None;
     let mut files = Vec::new();
 
-    while let Some(batch) = reader.next() {
+    for batch in reader {
         let batch = batch.map_err(|err| anyhow!("failed reading checkpoint batch: {err}"))?;
         let add = batch
             .column(0)

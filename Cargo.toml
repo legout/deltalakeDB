@@ -13,7 +13,7 @@ repository = "https://github.com/your-org/deltalakeDB"
 publish = false
 
 [workspace.dependencies]
-duckdb = { version = "1.4.1", features = ["bundled"] }
+duckdb = { version = "1.2.0", features = ["bundled"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "1.0"
@@ -29,4 +29,4 @@ url = "2.5"
 arrow-array = { version = "53.1.0" }
 arrow-schema = { version = "53.1.0" }
 parquet = { version = "53.1.0", features = ["arrow"] }
-pyo3 = { version = "0.21", features = ["extension-module"] }
+pyo3 = { version = "0.21", features = ["extension-module", "gil-refs"] }

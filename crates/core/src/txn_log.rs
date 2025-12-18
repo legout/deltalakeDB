@@ -459,7 +459,7 @@ impl LogLocation {
 
     fn read_commit(&self, version: Version) -> Result<CommitFile, TxnLogError> {
         let path = self.commit_path(version)?;
-        let data = fs::read(&path).map_err(|err| {
+        let data = fs::read(path).map_err(|err| {
             if err.kind() == io::ErrorKind::NotFound {
                 TxnLogError::MissingVersion(version)
             } else {

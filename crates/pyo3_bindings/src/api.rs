@@ -4,7 +4,7 @@ use pyo3::prelude::*;
 use uuid::Uuid;
 
 /// Create the api submodule
-pub fn create_module(py: Python) -> PyResult<PyModule> {
+pub fn create_module<'py>(py: Python<'py>) -> PyResult<&'py PyModule> {
     let m = PyModule::new(py, "api")?;
 
     m.add_class::<DeltaSQL>()?;

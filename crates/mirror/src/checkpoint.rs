@@ -14,7 +14,6 @@ use deltalakedb_core::{
     delta::{MetaDataPayload, ProtocolPayload},
     txn_log::{ActiveFile, Protocol, TableMetadata},
 };
-use serde_json;
 
 use crate::MirrorError;
 
@@ -96,7 +95,7 @@ fn build_record_batch(actions: &[CheckpointAction]) -> Result<RecordBatch, Mirro
                 add_size.append_value(add.size_bytes as i64);
                 add_partition.append_value(
                     serde_json::to_string(&add.partition_values)
-                        .map_err(|err| MirrorError::Serialization(err))?,
+                        .map_err(MirrorError::Serialization)?,
                 );
                 add_stats.append_null();
                 add_mod_time.append_value(add.modification_time);
@@ -137,7 +136,7 @@ fn build_record_batch(actions: &[CheckpointAction]) -> Result<RecordBatch, Mirro
                 }
                 metadata_partitions.append(true);
                 let config_json = serde_json::to_string(&meta.configuration)
-                    .map_err(|err| MirrorError::Serialization(err))?;
+                    .map_err(MirrorError::Serialization)?;
                 metadata_config.append_value(config_json);
                 metadata_validity.append(true);
 

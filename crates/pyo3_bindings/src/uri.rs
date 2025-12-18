@@ -1,10 +1,9 @@
 //! Python bindings for URI types
 
 use pyo3::prelude::*;
-use pyo3::types::PyDict;
 
 /// Create the uri submodule
-pub fn create_module(py: Python) -> PyResult<PyModule> {
+pub fn create_module<'py>(py: Python<'py>) -> PyResult<&'py PyModule> {
     let m = PyModule::new(py, "uri")?;
 
     m.add_class::<DeltasqlEngine>()?;

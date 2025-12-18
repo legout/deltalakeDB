@@ -5,6 +5,7 @@
 #![warn(missing_docs)]
 
 /// DuckDB-backed transaction log reader.
+#[cfg(feature = "duckdb")]
 pub mod duckdb;
 /// Postgres-backed transaction log reader/writer implementations.
 pub mod postgres;
@@ -13,6 +14,7 @@ pub mod sqlite;
 /// Shared DeltaSQL URI parser.
 pub mod uri;
 
+#[cfg(feature = "duckdb")]
 pub use duckdb::DuckdbTxnLogReader;
 pub use postgres::{
     MultiTableTransactionBuilder, PostgresConnectionOptions, PostgresTxnLogReader,
