@@ -20,19 +20,19 @@ __version__ = "0.0.0"
 # and will be fully implemented in Phase 5-7 of the add-python-bindings-pyo3 proposal
 try:
     from delkalakedb import (  # type: ignore[import-not-found]
-        DeltaSQL,
-        Table,
-        Transaction,
-        TransactionBuilder,
-        Snapshot,
         ActiveFile,
-        RemovedFile,
-        Protocol,
-        TableMetadata,
         ConcurrencyError,
         ConnectionError,
-        ValidationError,
+        DeltaSQL,
         NotFoundError,
+        Protocol,
+        RemovedFile,
+        Snapshot,
+        Table,
+        TableMetadata,
+        Transaction,
+        TransactionBuilder,
+        ValidationError,
     )
 except ImportError:
     # During development phase, these are stub implementations in crates/pyo3_bindings
@@ -47,19 +47,19 @@ except ImportError:
     )
     # Re-export stub types for type checking purposes
     from delkalakedb.stubs import (  # type: ignore[import-not-found]
-        DeltaSQL,
-        Table,
-        Transaction,
-        TransactionBuilder,
-        Snapshot,
         ActiveFile,
-        RemovedFile,
-        Protocol,
-        TableMetadata,
         ConcurrencyError,
         ConnectionError,
-        ValidationError,
+        DeltaSQL,
         NotFoundError,
+        Protocol,
+        RemovedFile,
+        Snapshot,
+        Table,
+        TableMetadata,
+        Transaction,
+        TransactionBuilder,
+        ValidationError,
     )
 
 __all__ = [
