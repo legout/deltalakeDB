@@ -16,6 +16,8 @@ __version__ = "0.0.0"
 
 # Import pyo3 bindings
 # These are built from crates/pyo3_bindings and compiled into the package
+# NOTE: During development (before maturin integration), these bindings are stubs
+# and will be fully implemented in Phase 5-7 of the add-python-bindings-pyo3 proposal
 try:
     from delkalakedb import (  # type: ignore[import-not-found]
         DeltaSQL,
@@ -32,12 +34,33 @@ try:
         ValidationError,
         NotFoundError,
     )
-except ImportError as e:
-    # Provide helpful error message if pyo3 bindings aren't built
-    raise ImportError(
-        "delkalakedb Python bindings not found. "
-        "Install with: pip install -e . (requires Rust/Cargo)"
-    ) from e
+except ImportError:
+    # During development phase, these are stub implementations in crates/pyo3_bindings
+    # Full pyo3 integration will be available after Phase 5
+    import warnings
+    warnings.warn(
+        "delkalakedb is in development: Python bindings are stubs. "
+        "Full functionality will be available after maturin integration (Phase 5+). "
+        "See IMPLEMENTATION_PLAN.md for details.",
+        FutureWarning,
+        stacklevel=2,
+    )
+    # Re-export stub types for type checking purposes
+    from delkalakedb.stubs import (  # type: ignore[import-not-found]
+        DeltaSQL,
+        Table,
+        Transaction,
+        TransactionBuilder,
+        Snapshot,
+        ActiveFile,
+        RemovedFile,
+        Protocol,
+        TableMetadata,
+        ConcurrencyError,
+        ConnectionError,
+        ValidationError,
+        NotFoundError,
+    )
 
 __all__ = [
     "DeltaSQL",

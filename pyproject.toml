@@ -1,6 +1,14 @@
 [build-system]
-requires = ["maturin>=1.5,<2"]
-build-backend = "maturin"
+# TODO: Switch to maturin backend once pyo3 bindings are fully integrated
+# For now, use hatchling as a placeholder until Phase 5 is complete
+requires = ["hatchling>=1.24.2"]
+build-backend = "hatchling.build"
+# Maturin configuration will be enabled after full integration testing
+# requires = ["maturin>=1.5,<2"]
+# build-backend = "maturin"
+# [tool.maturin]
+# python-source = "src"
+# module-name = "delkalakedb"
 
 [project]
 name = "delkalakedb"
