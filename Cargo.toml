@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/core", "crates/sql", "crates/mirror", "crates/observability", "crates/cli"]
+members = ["crates/core", "crates/sql", "crates/mirror", "crates/observability", "crates/cli", "crates/pyo3_bindings"]
 resolver = "2"
 
 [workspace.package]
@@ -29,3 +29,4 @@ url = "2.5"
 arrow-array = { version = "53.1.0" }
 arrow-schema = { version = "53.1.0" }
 parquet = { version = "53.1.0", features = ["arrow"] }
+pyo3 = { version = "0.21", features = ["extension-module"] }
