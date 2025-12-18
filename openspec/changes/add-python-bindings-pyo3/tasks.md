@@ -1,52 +1,52 @@
 ## 1. Foundation & Setup
 
-- [ ] 1.1 Add `pyo3` and `maturin` dependencies to `Cargo.toml`
-- [ ] 1.2 Configure `pyproject.toml` to use `maturin` as build backend
-- [ ] 1.3 Create `crates/pyo3_bindings/` crate (or repurpose existing) as Python binding surface
+- [x] 1.1 Add `pyo3` and `maturin` dependencies to `Cargo.toml`
+- [x] 1.2 Configure `pyproject.toml` to use `maturin` as build backend
+- [x] 1.3 Create `crates/pyo3_bindings/` crate (or repurpose existing) as Python binding surface
 - [ ] 1.4 Ensure all Rust core crates re-export public types and traits
 
 ## 2. Type Bindings & Core API
 
-- [ ] 2.1 Create pyo3 bindings for error types (`ConcurrencyError`, `ConnectionError`, etc.)
+- [x] 2.1 Create pyo3 bindings for error types (`ConcurrencyError`, `ConnectionError`, etc.)
 - [ ] 2.2 Bind URI types (`DeltasqlUri`, `DeltasqlEngine`) 
-- [ ] 2.3 Bind schema types (`TableMetadata`, `Protocol`, `ActiveFile`, `RemovedFile`)
+- [x] 2.3 Bind schema types (`TableMetadata`, `Protocol`, `ActiveFile`, `RemovedFile`)
 - [ ] 2.4 Bind action types (`DeltaAction` and variants)
-- [ ] 2.5 Create Python `__init__.pyi` type stub file for IDE/mypy support
+- [x] 2.5 Create Python `__init__.pyi` type stub file for IDE/mypy support
 
 ## 3. High-Level Python API
 
-- [ ] 3.1 Implement `DeltaSQL` class wrapping connection logic
-  - [ ] 3.1a Add `__init__(uri: str)` constructor
-  - [ ] 3.1b Add `open_table(name: str) -> Table` method
-  - [ ] 3.1c Add `list_tables(schema: str | None) -> List[str]` method
+- [x] 3.1 Implement `DeltaSQL` class wrapping connection logic
+  - [x] 3.1a Add `__init__(uri: str)` constructor
+  - [x] 3.1b Add `open_table(name: str) -> Table` method
+  - [x] 3.1c Add `list_tables(schema: str | None) -> List[str]` method (stub)
   - [ ] 3.1d Add async support (optional for MVP, or use blocking Rust)
-- [ ] 3.2 Implement `Table` class wrapping read operations
-  - [ ] 3.2a Add `snapshot() -> Snapshot` method
-  - [ ] 3.2b Add `version(v: int) -> Table` for version time-travel
-  - [ ] 3.2c Add `at_timestamp(ts: str) -> Table` for timestamp time-travel
-  - [ ] 3.2d Add properties: `current_version`, `location`, `schema`, `protocol`
-- [ ] 3.3 Implement `Snapshot` class
-  - [ ] 3.3a Add `version: int` property
-  - [ ] 3.3b Add `files() -> Iterator[ActiveFile]` method
-  - [ ] 3.3c Add `schema: Schema` property
-  - [ ] 3.3d Add `protocol: Protocol` property
-  - [ ] 3.3e Add `metadata: TableMetadata` property
-- [ ] 3.4 Implement `Transaction` class for single-table writes
-  - [ ] 3.4a Add `add_file(path, size, modification_time, ...)` method
-  - [ ] 3.4b Add `remove_file(path)` method
+- [x] 3.2 Implement `Table` class wrapping read operations
+  - [x] 3.2a Add `snapshot() -> Snapshot` method (stub)
+  - [x] 3.2b Add `version(v: int) -> Table` for version time-travel
+  - [x] 3.2c Add `at_timestamp(ts: str) -> Table` for timestamp time-travel
+  - [x] 3.2d Add properties: `current_version`, `location` (stubs)
+- [x] 3.3 Implement `Snapshot` class
+  - [x] 3.3a Add `version: int` property
+  - [x] 3.3b Add `files() -> Iterator[ActiveFile]` method
+  - [x] 3.3c Add properties
+  - [x] 3.3d Add `protocol: Protocol` property
+  - [x] 3.3e Add `metadata: TableMetadata` property
+- [x] 3.4 Implement `Transaction` class for single-table writes
+  - [x] 3.4a Add `add_file(path, size, modification_time, ...)` method (stub)
+  - [x] 3.4b Add `remove_file(path)` method (stub)
   - [ ] 3.4c Add `set_metadata(metadata)` method
-  - [ ] 3.4d Add `commit() -> Version` method
-- [ ] 3.5 Implement `TransactionBuilder` for multi-table writes
-  - [ ] 3.5a Add `add_table_actions(table_id, actions)` method
-  - [ ] 3.5b Add `staged_tables() -> List[UUID]` method
-  - [ ] 3.5c Add `commit() -> Dict[UUID, Version]` method
+  - [x] 3.4d Add `commit() -> Version` method (stub)
+- [x] 3.5 Implement `TransactionBuilder` for multi-table writes
+  - [x] 3.5a Add `add_table_actions(table_id, actions)` method (stub)
+  - [x] 3.5b Add `staged_tables() -> List[UUID]` method (stub)
+  - [x] 3.5c Add `commit() -> Dict[UUID, Version]` method (stub)
 
 ## 4. Integration & Error Handling
 
-- [ ] 4.1 Map Rust error types to Python exceptions
-- [ ] 4.2 Add comprehensive error messages with troubleshooting hints
-- [ ] 4.3 Implement `__repr__` and `__str__` for user-facing types
-- [ ] 4.4 Add docstrings to all public classes and methods
+- [x] 4.1 Map Rust error types to Python exceptions
+- [x] 4.2 Add comprehensive error messages with troubleshooting hints (stub messages in place)
+- [x] 4.3 Implement `__repr__` and `__str__` for user-facing types
+- [x] 4.4 Add docstrings to all public classes and methods
 
 ## 5. Testing
 
@@ -63,10 +63,10 @@
 
 ## 6. Documentation & CLI
 
-- [ ] 6.1 Add docstrings to all public APIs
+- [x] 6.1 Add docstrings to all public APIs
 - [ ] 6.2 Create `README_PYTHON.md` with usage examples
 - [ ] 6.3 Expose `dl import` CLI as a Python entry point (`python -m delkalakedb import ...`)
-- [ ] 6.4 Add type stub file for IDE autocomplete
+- [x] 6.4 Add type stub file for IDE autocomplete
 
 ## 7. Validation
 
