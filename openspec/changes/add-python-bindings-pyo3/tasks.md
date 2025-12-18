@@ -3,14 +3,14 @@
 - [x] 1.1 Add `pyo3` and `maturin` dependencies to `Cargo.toml`
 - [x] 1.2 Configure `pyproject.toml` to use `maturin` as build backend
 - [x] 1.3 Create `crates/pyo3_bindings/` crate (or repurpose existing) as Python binding surface
-- [ ] 1.4 Ensure all Rust core crates re-export public types and traits
+- [x] 1.4 Ensure all Rust core crates re-export public types and traits
 
 ## 2. Type Bindings & Core API
 
 - [x] 2.1 Create pyo3 bindings for error types (`ConcurrencyError`, `ConnectionError`, etc.)
-- [ ] 2.2 Bind URI types (`DeltasqlUri`, `DeltasqlEngine`) 
+- [x] 2.2 Bind URI types (`DeltasqlUri`, `DeltasqlEngine`) 
 - [x] 2.3 Bind schema types (`TableMetadata`, `Protocol`, `ActiveFile`, `RemovedFile`)
-- [ ] 2.4 Bind action types (`DeltaAction` and variants)
+- [ ] 2.4 Bind action types (`DeltaAction` and variants) (defer to Phase 5+)
 - [x] 2.5 Create Python `__init__.pyi` type stub file for IDE/mypy support
 
 ## 3. High-Level Python API
@@ -34,7 +34,7 @@
 - [x] 3.4 Implement `Transaction` class for single-table writes
   - [x] 3.4a Add `add_file(path, size, modification_time, ...)` method (stub)
   - [x] 3.4b Add `remove_file(path)` method (stub)
-  - [ ] 3.4c Add `set_metadata(metadata)` method
+  - [x] 3.4c Add `set_metadata(metadata)` method
   - [x] 3.4d Add `commit() -> Version` method (stub)
 - [x] 3.5 Implement `TransactionBuilder` for multi-table writes
   - [x] 3.5a Add `add_table_actions(table_id, actions)` method (stub)
@@ -64,7 +64,7 @@
 ## 6. Documentation & CLI
 
 - [x] 6.1 Add docstrings to all public APIs
-- [ ] 6.2 Create `README_PYTHON.md` with usage examples
+- [x] 6.2 Create `README_PYTHON.md` with usage examples
 - [ ] 6.3 Expose `dl import` CLI as a Python entry point (`python -m delkalakedb import ...`)
 - [x] 6.4 Add type stub file for IDE autocomplete
 
