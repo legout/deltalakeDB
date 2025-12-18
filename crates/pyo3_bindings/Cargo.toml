@@ -1,0 +1,31 @@
+[package]
+name = "delkalakedb-pyo3"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish = false
+
+[lib]
+name = "delkalakedb"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3.workspace = true
+tokio = { workspace = true, features = ["rt"] }
+uuid.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+chrono.workspace = true
+anyhow = "1.0"
+
+deltalakedb-core = { path = "../core" }
+deltalakedb-sql = { path = "../sql" }
+deltalakedb-mirror = { path = "../mirror" }
+deltalakedb-observability = { path = "../observability" }
+
+[[bin]]
+name = "build_helpers"
+path = "build/build_helpers.rs"

@@ -1,6 +1,6 @@
 [build-system]
-requires = ["hatchling>=1.24.2"]
-build-backend = "hatchling.build"
+requires = ["maturin>=1.5,<2"]
+build-backend = "maturin"
 
 [project]
 name = "delkalakedb"
