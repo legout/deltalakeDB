@@ -6,7 +6,7 @@ in Phase 5 of the add-python-bindings-pyo3 proposal.
 For type hints and IDE support, use the __init__.pyi file.
 """
 
-from typing import Any, Dict, List, Optional, Iterator
+from typing import Dict, List, Optional
 
 
 class ActiveFile:
