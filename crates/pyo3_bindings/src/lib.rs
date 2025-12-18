@@ -19,6 +19,7 @@ fn delkalakedb(py: Python, m: &PyModule) -> PyResult<()> {
     m.add_submodule(errors::create_module(py)?)?;
     m.add_submodule(types::create_module(py)?)?;
     m.add_submodule(api::create_module(py)?)?;
+    m.add_submodule(uri::create_module(py)?)?;
 
     Ok(())
 }
@@ -26,3 +27,4 @@ fn delkalakedb(py: Python, m: &PyModule) -> PyResult<()> {
 pub mod api;
 pub mod errors;
 pub mod types;
+pub mod uri;

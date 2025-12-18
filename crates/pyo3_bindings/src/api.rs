@@ -192,6 +192,16 @@ impl Transaction {
         Ok(())
     }
 
+    /// Set metadata for the table (schema, partition columns, etc.)
+    pub fn set_metadata(&mut self, metadata: &crate::types::TableMetadata) -> PyResult<()> {
+        self.actions.push(format!(
+            "set_metadata(schema_len={}, partitions={})",
+            metadata.schema_json.len(),
+            metadata.partition_columns.len()
+        ));
+        Ok(())
+    }
+
     /// Commit the transaction.
     ///
     /// Returns the new version number.

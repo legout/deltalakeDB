@@ -137,6 +137,10 @@ class Transaction:
         """Remove a file from the transaction."""
         ...
 
+    def set_metadata(self, metadata: TableMetadata) -> None:
+        """Set metadata for the table (schema, partition columns, etc.)."""
+        ...
+
     def commit(self) -> int:
         """Commit the transaction and return the new version number."""
         ...

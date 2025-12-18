@@ -150,7 +150,13 @@ class Transaction:
     
     def remove_file(self, path: str) -> None:
         raise NotImplementedError()
-    
+
+    def set_metadata(self, metadata: TableMetadata) -> None:
+        raise NotImplementedError(
+            "Transaction.set_metadata() is not yet implemented. "
+            "See IMPLEMENTATION_PLAN.md Phase 5 for details."
+        )
+
     def commit(self) -> int:
         raise NotImplementedError()
 
