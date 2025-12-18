@@ -4,20 +4,19 @@
 
 #![warn(missing_docs)]
 
-/// Placeholder module to ensure the crate compiles.
-pub mod placeholder {
-    /// Placeholder function.
-    pub fn hello() -> &'static str {
-        "Hello from deltalakedb-sql"
-    }
-}
+/// DuckDB-backed transaction log reader.
+pub mod duckdb;
+/// Postgres-backed transaction log reader/writer implementations.
+pub mod postgres;
+/// SQLite-backed transaction log reader.
+pub mod sqlite;
+/// Shared DeltaSQL URI parser.
+pub mod uri;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn placeholder_hello() {
-        assert_eq!(placeholder::hello(), "Hello from deltalakedb-sql");
-    }
-}
+pub use duckdb::DuckdbTxnLogReader;
+pub use postgres::{
+    MultiTableTransactionBuilder, PostgresConnectionOptions, PostgresTxnLogReader,
+    PostgresTxnLogWriter,
+};
+pub use sqlite::SqliteTxnLogReader;
+pub use uri::{DeltasqlEngine, DeltasqlUri, DeltasqlUriError};

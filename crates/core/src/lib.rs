@@ -4,20 +4,15 @@
 
 #![warn(missing_docs)]
 
-/// Placeholder module to ensure the crate compiles.
-pub mod placeholder {
-    /// Placeholder function.
-    pub fn hello() -> &'static str {
-        "Hello from deltalakedb-core"
-    }
-}
+/// Shared Delta JSON action definitions.
+pub mod delta;
+/// Transaction log abstractions shared across metadata implementations.
+pub mod txn_log;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn placeholder_hello() {
-        assert_eq!(placeholder::hello(), "Hello from deltalakedb-core");
-    }
-}
+// Re-export key types for pyo3 bindings and public API
+pub use delta::{
+    AddPayload, CommitInfo, DeltaAction, MetaDataPayload, ProtocolPayload, RemovePayload,
+};
+pub use txn_log::{
+    ActiveFile, Protocol, RemovedFile, TableMetadata, TxnLogReader, TxnLogWriter, Version,
+};

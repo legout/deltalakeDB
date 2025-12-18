@@ -8,12 +8,23 @@ authors.workspace = true
 publish = false
 
 [dependencies]
-# Placeholder for future dependencies
-# deltalakedb-core = { path = "../core" }
-# serde = { workspace = true }
-# serde_json = { workspace = true }
-# tracing = { workspace = true }
+deltalakedb-core = { path = "../core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+sqlx = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+async-trait = { workspace = true }
+arrow-array = { workspace = true }
+arrow-schema = { workspace = true }
+parquet = { workspace = true }
+deltalakedb-observability = { path = "../observability" }
 
 [dev-dependencies]
-# Placeholder for future dev dependencies
-# tokio-test = "0.4"
+tempfile = "3"
+serial_test = "2"
