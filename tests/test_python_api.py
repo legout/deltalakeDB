@@ -22,10 +22,10 @@ class TestImports:
     def test_import_types(self) -> None:
         """Import type definitions."""
         from delkalakedb import (
-            Snapshot,
             ActiveFile,
-            RemovedFile,
             Protocol,
+            RemovedFile,
+            Snapshot,
             TableMetadata,
         )
 
@@ -40,8 +40,8 @@ class TestImports:
         from delkalakedb import (
             ConcurrencyError,
             ConnectionError,
-            ValidationError,
             NotFoundError,
+            ValidationError,
         )
 
         assert ConcurrencyError is not None
