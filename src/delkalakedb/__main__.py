@@ -18,7 +18,7 @@ def import_command(args: argparse.Namespace) -> None:
     # For now, this is a stub that will be connected during Phase 5
 
     try:
-        from delkalakedb_cli import import_table
+        from delkalakedb_cli import import_table  # type: ignore[import-not-found]
     except ImportError:
         print(
             "Error: CLI bindings not available. "
