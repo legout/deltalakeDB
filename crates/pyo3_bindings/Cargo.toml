@@ -25,7 +25,3 @@ deltalakedb-core = { path = "../core" }
 deltalakedb-sql = { path = "../sql" }
 deltalakedb-mirror = { path = "../mirror" }
 deltalakedb-observability = { path = "../observability" }
-
-[[bin]]
-name = "build_helpers"
-path = "build/build_helpers.rs"

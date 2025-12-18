@@ -212,11 +212,7 @@ pub struct TableMetadata {
 impl TableMetadata {
     /// Create new table metadata.
     #[new]
-    pub fn new(
-        schema_json: String,
-        partition_columns: Vec<String>,
-        configuration: String,
-    ) -> Self {
+    pub fn new(schema_json: String, partition_columns: Vec<String>, configuration: String) -> Self {
         Self {
             schema_json,
             partition_columns,
@@ -312,21 +308,29 @@ impl Snapshot {
     /// Get protocol
     #[getter]
     pub fn get_protocol(&self) -> PyResult<Py<Protocol>> {
-        Python::with_gil(|py| Ok(Py::new(py, Protocol::new(
-            self.protocol.min_reader_version,
-            self.protocol.min_writer_version,
-        ))?))
+        Python::with_gil(|py| {
+            Ok(Py::new(
+                py,
+                Protocol::new(
+                    self.protocol.min_reader_version,
+                    self.protocol.min_writer_version,
+                ),
+            )?)
+        })
     }
 
     /// Get metadata
     #[getter]
     pub fn get_metadata(&self) -> PyResult<Py<TableMetadata>> {
         Python::with_gil(|py| {
-            Ok(Py::new(py, TableMetadata::new(
-                self.metadata.schema_json.clone(),
-                self.metadata.partition_columns.clone(),
-                self.metadata.configuration.clone(),
-            ))?)
+            Ok(Py::new(
+                py,
+                TableMetadata::new(
+                    self.metadata.schema_json.clone(),
+                    self.metadata.partition_columns.clone(),
+                    self.metadata.configuration.clone(),
+                ),
+            )?)
         })
     }
 
@@ -337,13 +341,16 @@ impl Snapshot {
             self.files
                 .iter()
                 .map(|f| {
-                    Ok(Py::new(py, ActiveFile::new(
-                        f.path.clone(),
-                        f.size,
-                        f.modification_time,
-                        f.partition_values.clone(),
-                        f.data_change,
-                    ))?)
+                    Ok(Py::new(
+                        py,
+                        ActiveFile::new(
+                            f.path.clone(),
+                            f.size,
+                            f.modification_time,
+                            f.partition_values.clone(),
+                            f.data_change,
+                        ),
+                    )?)
                 })
                 .collect()
         })

@@ -23,6 +23,6 @@ fn delkalakedb(py: Python, m: &PyModule) -> PyResult<()> {
     Ok(())
 }
 
+pub mod api;
 pub mod errors;
 pub mod types;
-pub mod api;

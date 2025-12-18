@@ -1,7 +1,7 @@
 //! Python exception types mapping from Rust error domain
 
-use pyo3::prelude::*;
 use pyo3::exceptions;
+use pyo3::prelude::*;
 
 /// Create the errors submodule
 pub fn create_module(py: Python) -> PyResult<PyModule> {

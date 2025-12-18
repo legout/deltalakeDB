@@ -87,7 +87,10 @@ impl DeltaSQL {
 
     /// Get connection URI (for internal use)
     pub fn __repr__(&self) -> String {
-        format!("DeltaSQL(uri='{}...', ...)", &self.uri[0..std::cmp::min(50, self.uri.len())])
+        format!(
+            "DeltaSQL(uri='{}...', ...)",
+            &self.uri[0..std::cmp::min(50, self.uri.len())]
+        )
     }
 }
 
@@ -155,8 +158,12 @@ impl Table {
         } else {
             String::new()
         };
-        format!("Table(name='{}'{}, uri='{}...', ...)", self.name, time_travel, 
-                &self.connection_uri[0..std::cmp::min(50, self.connection_uri.len())])
+        format!(
+            "Table(name='{}'{}, uri='{}...', ...)",
+            self.name,
+            time_travel,
+            &self.connection_uri[0..std::cmp::min(50, self.connection_uri.len())]
+        )
     }
 }
 
@@ -171,12 +178,7 @@ pub struct Transaction {
 #[pymethods]
 impl Transaction {
     /// Add a file to the transaction.
-    pub fn add_file(
-        &mut self,
-        path: &str,
-        size: i64,
-        modification_time: i64,
-    ) -> PyResult<()> {
+    pub fn add_file(&mut self, path: &str, size: i64, modification_time: i64) -> PyResult<()> {
         self.actions.push(format!(
             "add_file(path={}, size={}, mod_time={})",
             path, size, modification_time
