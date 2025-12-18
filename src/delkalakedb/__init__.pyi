@@ -1,6 +1,6 @@
 """Type stubs for delkalakedb Python bindings."""
 
-from typing import Dict, Iterator, List, Optional
+from typing import Dict, List, Optional
 
 class ActiveFile:
     """Represents an active file in a Delta table."""
