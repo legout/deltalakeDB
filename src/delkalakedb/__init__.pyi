@@ -75,10 +75,6 @@ class Snapshot:
         files: List[ActiveFile],
     ) -> Snapshot: ...
 
-    def files(self) -> Iterator[ActiveFile]:
-        """Iterate over active files in the snapshot."""
-        ...
-
 class DeltaSQL:
     """Main entry point for DeltaSQL connections and table operations."""
 
