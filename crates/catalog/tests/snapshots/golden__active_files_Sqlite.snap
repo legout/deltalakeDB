@@ -1,0 +1,37 @@
+---
+source: crates/catalog/tests/golden.rs
+expression: "format!(\"-- params: [{}]\\n{}\", params_string(q.params), q.sql)"
+---
+-- params: [TableId, Version, TableId, Version]
+
+            WITH actions AS (
+                SELECT path,
+                       version,
+                       1 AS is_add,
+                       size_bytes,
+                       partition_values,
+                       modification_time
+                FROM dl_add_files
+                WHERE table_id = ? AND version <= ?
+                UNION ALL
+                SELECT path,
+                       version,
+                       0 AS is_add,
+                       NULL AS size_bytes,
+                       NULL AS partition_values,
+                       NULL AS modification_time
+                FROM dl_remove_files
+                WHERE table_id = ? AND version <= ?
+            ), ranked AS (
+                SELECT path,
+                       size_bytes,
+                       partition_values,
+                       modification_time,
+                       is_add,
+                       ROW_NUMBER() OVER (PARTITION BY path ORDER BY version DESC) AS rn
+                FROM actions
+            )
+            SELECT path, size_bytes, partition_values, modification_time
+            FROM ranked
+            WHERE rn = 1 AND is_add = 1
+            ORDER BY path

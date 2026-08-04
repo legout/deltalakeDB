@@ -15,6 +15,7 @@ use crate::json::JsonCommitSerializer;
 use crate::object_store::ObjectStore;
 use deltalakedb_core::delta::{
     AddPayload, CommitInfo, DeltaAction, MetaDataPayload, ProtocolPayload, RemovePayload,
+    json_value_to_string,
 };
 
 /// Result of processing a single pending mirror job.
@@ -381,23 +382,13 @@ fn value_to_string_map(value: Option<Value>) -> Result<HashMap<String, String>, 
         None => Ok(map),
         Some(Value::Object(obj)) => {
             for (key, value) in obj {
-                map.insert(key, value_to_string(value));
+                map.insert(key, json_value_to_string(value));
             }
             Ok(map)
         }
         Some(other) => Err(MirrorError::InvalidState(format!(
             "expected JSON object for table_properties, got {other:?}"
         ))),
-    }
-}
-
-fn value_to_string(value: Value) -> String {
-    match value {
-        Value::String(s) => s,
-        Value::Number(n) => n.to_string(),
-        Value::Bool(b) => b.to_string(),
-        Value::Null => String::new(),
-        other => other.to_string(),
     }
 }
 

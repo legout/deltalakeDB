@@ -1,0 +1,13 @@
+---
+source: crates/catalog/tests/golden.rs
+expression: "table_names().join(\"\\n\")"
+---
+dl_tables
+dl_table_heads
+dl_table_versions
+dl_add_files
+dl_remove_files
+dl_metadata_updates
+dl_protocol_updates
+dl_txn_actions
+dl_mirror_status

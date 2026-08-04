@@ -3,6 +3,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
+use deltalakedb_catalog::{
+    active_files_query, latest_metadata_query, latest_protocol_query, CatalogParam, Dialect,
+};
+use deltalakedb_core::delta::json_value_to_string;
 use deltalakedb_core::txn_log::{ActiveFile, Protocol, TableMetadata};
 use deltalakedb_observability as obs;
 use serde_json::Value;
@@ -249,19 +253,15 @@ async fn load_snapshot(
     table_id: Uuid,
     version: i64,
 ) -> Result<SnapshotData, MirrorError> {
-    let metadata_row = sqlx::query(
-        r#"
-        SELECT schema_json, partition_columns, table_properties
-        FROM dl_metadata_updates
-        WHERE table_id = $1 AND version <= $2
-        ORDER BY version DESC
-        LIMIT 1
-        "#,
-    )
-    .bind(table_id)
-    .bind(version)
-    .fetch_optional(pool)
-    .await?;
+    let metadata_q = latest_metadata_query(Dialect::Postgres);
+    let mut metadata_query = sqlx::query(metadata_q.sql);
+    for p in metadata_q.params {
+        metadata_query = match p {
+            CatalogParam::TableId => metadata_query.bind(table_id),
+            CatalogParam::Version => metadata_query.bind(version),
+        };
+    }
+    let metadata_row = metadata_query.fetch_optional(pool).await?;
 
     let metadata_row = metadata_row.ok_or_else(|| {
         MirrorError::InvalidState(format!(
@@ -280,19 +280,15 @@ async fn load_snapshot(
         configuration.clone(),
     );
 
-    let protocol_row = sqlx::query(
-        r#"
-        SELECT min_reader_version, min_writer_version
-        FROM dl_protocol_updates
-        WHERE table_id = $1 AND version <= $2
-        ORDER BY version DESC
-        LIMIT 1
-        "#,
-    )
-    .bind(table_id)
-    .bind(version)
-    .fetch_optional(pool)
-    .await?;
+    let protocol_q = latest_protocol_query(Dialect::Postgres);
+    let mut protocol_query = sqlx::query(protocol_q.sql);
+    for p in protocol_q.params {
+        protocol_query = match p {
+            CatalogParam::TableId => protocol_query.bind(table_id),
+            CatalogParam::Version => protocol_query.bind(version),
+        };
+    }
+    let protocol_row = protocol_query.fetch_optional(pool).await?;
 
     let protocol_row = protocol_row.ok_or_else(|| {
         MirrorError::InvalidState(format!(
@@ -320,40 +316,15 @@ async fn load_active_files(
     table_id: Uuid,
     version: i64,
 ) -> Result<Vec<ActiveFile>, MirrorError> {
-    let rows = sqlx::query(
-        r#"
-        WITH actions AS (
-            SELECT path,
-                   version,
-                   TRUE AS is_add,
-                   size_bytes,
-                   partition_values,
-                   modification_time
-            FROM dl_add_files
-            WHERE table_id = $1 AND version <= $2
-            UNION ALL
-            SELECT path,
-                   version,
-                   FALSE AS is_add,
-                   NULL::BIGINT AS size_bytes,
-                   NULL::JSONB AS partition_values,
-                   NULL::BIGINT AS modification_time
-            FROM dl_remove_files
-            WHERE table_id = $1 AND version <= $2
-        ), ranked AS (
-            SELECT *, ROW_NUMBER() OVER (PARTITION BY path ORDER BY version DESC) AS rn
-            FROM actions
-        )
-        SELECT path, size_bytes, partition_values, modification_time
-        FROM ranked
-        WHERE rn = 1 AND is_add = TRUE
-        ORDER BY path
-        "#,
-    )
-    .bind(table_id)
-    .bind(version)
-    .fetch_all(pool)
-    .await?;
+    let files_q = active_files_query(Dialect::Postgres);
+    let mut files_query = sqlx::query(files_q.sql);
+    for p in files_q.params {
+        files_query = match p {
+            CatalogParam::TableId => files_query.bind(table_id),
+            CatalogParam::Version => files_query.bind(version),
+        };
+    }
+    let rows = files_query.fetch_all(pool).await?;
 
     let mut files = Vec::new();
     for row in rows {
@@ -363,7 +334,7 @@ async fn load_active_files(
         let modification_time: Option<i64> = row.try_get("modification_time")?;
         let partitions = value_to_value_map(partition_values)?
             .into_iter()
-            .map(|(k, v)| (k, value_to_string(v)))
+            .map(|(k, v)| (k, json_value_to_string(v)))
             .collect();
         files.push(ActiveFile {
             path,
@@ -382,7 +353,7 @@ fn value_to_string_map(value: Option<Value>) -> Result<HashMap<String, String>, 
         None => Ok(map),
         Some(Value::Object(obj)) => {
             for (key, value) in obj {
-                map.insert(key, value_to_string(value));
+                map.insert(key, json_value_to_string(value));
             }
             Ok(map)
         }
@@ -405,15 +376,5 @@ fn value_to_value_map(value: Option<Value>) -> Result<HashMap<String, Value>, Mi
         Some(other) => Err(MirrorError::InvalidState(format!(
             "expected JSON object, got {other:?}"
         ))),
-    }
-}
-
-fn value_to_string(value: Value) -> String {
-    match value {
-        Value::String(s) => s,
-        Value::Number(n) => n.to_string(),
-        Value::Bool(b) => b.to_string(),
-        Value::Null => String::new(),
-        other => other.to_string(),
     }
 }

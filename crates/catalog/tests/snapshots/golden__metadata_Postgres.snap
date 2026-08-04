@@ -1,0 +1,11 @@
+---
+source: crates/catalog/tests/golden.rs
+expression: "format!(\"-- params: [{}]\\n{}\", params_string(q.params), q.sql)"
+---
+-- params: [TableId, Version]
+
+            SELECT schema_json, partition_columns, table_properties
+            FROM dl_metadata_updates
+            WHERE table_id = $1 AND version <= $2
+            ORDER BY version DESC
+            LIMIT 1

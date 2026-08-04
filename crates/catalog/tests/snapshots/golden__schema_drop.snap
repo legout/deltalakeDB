@@ -1,0 +1,13 @@
+---
+source: crates/catalog/tests/golden.rs
+expression: "schema_drop_ddl().join(\"\\n\")"
+---
+DROP TABLE IF EXISTS dl_mirror_status
+DROP TABLE IF EXISTS dl_txn_actions
+DROP TABLE IF EXISTS dl_protocol_updates
+DROP TABLE IF EXISTS dl_metadata_updates
+DROP TABLE IF EXISTS dl_remove_files
+DROP TABLE IF EXISTS dl_add_files
+DROP TABLE IF EXISTS dl_table_versions
+DROP TABLE IF EXISTS dl_table_heads
+DROP TABLE IF EXISTS dl_tables

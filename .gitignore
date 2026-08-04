@@ -10,3 +10,6 @@ wheels/
 .venv
 .worktrees
 
+# Rust / Cargo build output
+target/
+

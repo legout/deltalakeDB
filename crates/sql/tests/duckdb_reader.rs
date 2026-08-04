@@ -1,4 +1,5 @@
 use chrono::{Duration, Utc};
+use deltalakedb_catalog::{schema_ddl, Dialect};
 use deltalakedb_core::txn_log::TxnLogReader;
 use deltalakedb_sql::DuckdbTxnLogReader;
 use duckdb::Connection;
@@ -63,55 +64,7 @@ fn bootstrap_duckdb(path: &str, table_id: Uuid) -> Result<(), Box<dyn std::error
 }
 
 fn apply_schema(conn: &Connection) -> duckdb::Result<()> {
-    let stmts = [
-        r#"CREATE TABLE IF NOT EXISTS dl_table_heads (
-                table_id UUID PRIMARY KEY,
-                current_version BIGINT NOT NULL,
-                updated_at TIMESTAMP NOT NULL
-            )"#,
-        r#"CREATE TABLE IF NOT EXISTS dl_table_versions (
-                table_id UUID NOT NULL,
-                version BIGINT NOT NULL,
-                committed_at TIMESTAMP NOT NULL,
-                committer VARCHAR,
-                operation VARCHAR,
-                PRIMARY KEY (table_id, version)
-            )"#,
-        r#"CREATE TABLE IF NOT EXISTS dl_metadata_updates (
-                table_id UUID NOT NULL,
-                version BIGINT NOT NULL,
-                schema_json JSON NOT NULL,
-                partition_columns VARCHAR[],
-                table_properties JSON,
-                PRIMARY KEY (table_id, version)
-            )"#,
-        r#"CREATE TABLE IF NOT EXISTS dl_protocol_updates (
-                table_id UUID NOT NULL,
-                version BIGINT NOT NULL,
-                min_reader_version INTEGER NOT NULL,
-                min_writer_version INTEGER NOT NULL,
-                PRIMARY KEY (table_id, version)
-            )"#,
-        r#"CREATE TABLE IF NOT EXISTS dl_add_files (
-                table_id UUID NOT NULL,
-                version BIGINT NOT NULL,
-                path VARCHAR NOT NULL,
-                size_bytes BIGINT,
-                partition_values JSON,
-                modification_time BIGINT,
-                PRIMARY KEY (table_id, version, path)
-            )"#,
-        r#"CREATE TABLE IF NOT EXISTS dl_remove_files (
-                table_id UUID NOT NULL,
-                version BIGINT NOT NULL,
-                path VARCHAR NOT NULL,
-                deletion_timestamp BIGINT,
-                data_change BOOLEAN,
-                PRIMARY KEY (table_id, version, path)
-            )"#,
-    ];
-
-    for stmt in stmts {
+    for stmt in schema_ddl(Dialect::DuckDb) {
         conn.execute(stmt, [])?;
     }
     Ok(())

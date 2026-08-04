@@ -1,5 +1,20 @@
-#[path = "../../sql/tests/common.rs"]
-mod schema;
+mod schema {
+    use deltalakedb_catalog::{schema_ddl, schema_drop_ddl, Dialect};
+
+    /// Drops and re-creates the Postgres catalog from `deltalakedb_catalog`.
+    /// The DDL lives in one place; this is the sqlx execution wrapper for the
+    /// mirror integration tests (formerly smuggled from the sql crate's test
+    /// tree via a `#[path]` import).
+    pub async fn reset_catalog(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
+        for stmt in schema_drop_ddl() {
+            sqlx::query(stmt).execute(pool).await?;
+        }
+        for stmt in schema_ddl(Dialect::Postgres) {
+            sqlx::query(stmt).execute(pool).await?;
+        }
+        Ok(())
+    }
+}
 
 use arrow_array::{StringArray, StructArray};
 use chrono::{DateTime, Duration, Utc};

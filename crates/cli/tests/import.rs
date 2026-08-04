@@ -3,6 +3,7 @@ use std::fs;
 use std::path::Path;
 
 use anyhow::Result;
+use deltalakedb_catalog::{schema_ddl, Dialect};
 use deltalakedb_cli::{run_import, ImportConfig};
 use deltalakedb_core::txn_log::{
     ActiveFile, CommitRequest, FileTxnLogReader, FileTxnLogWriter, Protocol, RemovedFile,
@@ -134,84 +135,7 @@ fn sample_file(path: &str, date: &str) -> ActiveFile {
 }
 
 async fn apply_sqlite_schema(pool: &SqlitePool) -> Result<()> {
-    let stmts = [
-        r#"CREATE TABLE IF NOT EXISTS dl_tables (
-                table_id TEXT PRIMARY KEY,
-                name TEXT,
-                location TEXT NOT NULL,
-                created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                protocol_min_reader INTEGER NOT NULL,
-                protocol_min_writer INTEGER NOT NULL,
-                properties TEXT NOT NULL DEFAULT '{}'
-            )"#,
-        r#"CREATE TABLE IF NOT EXISTS dl_table_heads (
-                table_id TEXT PRIMARY KEY,
-                current_version INTEGER NOT NULL,
-                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-            )"#,
-        r#"CREATE TABLE IF NOT EXISTS dl_table_versions (
-                table_id TEXT NOT NULL,
-                version INTEGER NOT NULL,
-                committed_at TEXT NOT NULL,
-                committer TEXT,
-                operation TEXT,
-                operation_params TEXT,
-                PRIMARY KEY (table_id, version)
-            )"#,
-        r#"CREATE TABLE IF NOT EXISTS dl_add_files (
-                table_id TEXT NOT NULL,
-                version INTEGER NOT NULL,
-                path TEXT NOT NULL,
-                size_bytes INTEGER,
-                partition_values TEXT,
-                stats TEXT,
-                data_change INTEGER,
-                modification_time INTEGER,
-                PRIMARY KEY (table_id, version, path)
-            )"#,
-        r#"CREATE TABLE IF NOT EXISTS dl_remove_files (
-                table_id TEXT NOT NULL,
-                version INTEGER NOT NULL,
-                path TEXT NOT NULL,
-                deletion_timestamp INTEGER,
-                data_change INTEGER,
-                PRIMARY KEY (table_id, version, path)
-            )"#,
-        r#"CREATE TABLE IF NOT EXISTS dl_metadata_updates (
-                table_id TEXT NOT NULL,
-                version INTEGER NOT NULL,
-                schema_json TEXT NOT NULL,
-                partition_columns TEXT,
-                table_properties TEXT,
-                PRIMARY KEY (table_id, version)
-            )"#,
-        r#"CREATE TABLE IF NOT EXISTS dl_protocol_updates (
-                table_id TEXT NOT NULL,
-                version INTEGER NOT NULL,
-                min_reader_version INTEGER NOT NULL,
-                min_writer_version INTEGER NOT NULL,
-                PRIMARY KEY (table_id, version)
-            )"#,
-        r#"CREATE TABLE IF NOT EXISTS dl_txn_actions (
-                table_id TEXT NOT NULL,
-                version INTEGER NOT NULL,
-                app_id TEXT NOT NULL,
-                last_update INTEGER NOT NULL,
-                PRIMARY KEY (table_id, version, app_id)
-            )"#,
-        r#"CREATE TABLE IF NOT EXISTS dl_mirror_status (
-                table_id TEXT NOT NULL,
-                version INTEGER NOT NULL,
-                status TEXT NOT NULL,
-                attempts INTEGER NOT NULL DEFAULT 0,
-                last_error TEXT,
-                digest TEXT,
-                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-                PRIMARY KEY (table_id, version)
-            )"#,
-    ];
-
-    for stmt in stmts {
+    for stmt in schema_ddl(Dialect::Sqlite) {
         sqlx::query(stmt).execute(pool).await?;
     }
     Ok(())

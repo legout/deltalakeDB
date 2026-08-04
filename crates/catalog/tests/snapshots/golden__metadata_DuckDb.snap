@@ -1,0 +1,20 @@
+---
+source: crates/catalog/tests/golden.rs
+expression: "format!(\"-- params: [{}]\\n{}\", params_string(q.params), q.sql)"
+---
+-- params: [TableId, Version]
+
+            SELECT
+                CAST(schema_json AS VARCHAR) AS schema_json,
+                CASE
+                    WHEN partition_columns IS NULL THEN NULL
+                    ELSE to_json(partition_columns)
+                END AS partition_columns_json,
+                CASE
+                    WHEN table_properties IS NULL THEN NULL
+                    ELSE CAST(table_properties AS VARCHAR)
+                END AS table_properties
+            FROM dl_metadata_updates
+            WHERE table_id = ? AND version <= ?
+            ORDER BY version DESC
+            LIMIT 1

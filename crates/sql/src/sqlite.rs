@@ -1,6 +1,9 @@
 //! SQLite-backed implementation of `TxnLogReader`.
 
 use chrono::{DateTime, Utc};
+use deltalakedb_catalog::{
+    active_files_query, latest_metadata_query, latest_protocol_query, CatalogParam, Dialect,
+};
 use deltalakedb_core::txn_log::{
     ActiveFile, Protocol, TableMetadata, TableSnapshot, TxnLogError, TxnLogReader, Version,
     INITIAL_VERSION,
@@ -106,21 +109,19 @@ impl SqliteTxnLogReader {
     }
 
     async fn fetch_metadata(&self, version: Version) -> Result<TableMetadata, TxnLogError> {
-        let row = sqlx::query(
-            r#"
-            SELECT schema_json, partition_columns, table_properties
-            FROM dl_metadata_updates
-            WHERE table_id = ? AND version <= ?
-            ORDER BY version DESC
-            LIMIT 1
-            "#,
-        )
-        .bind(self.table_id)
-        .bind(version)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(sqlite_err)?
-        .ok_or(TxnLogError::MissingMetadata)?;
+        let q = latest_metadata_query(Dialect::Sqlite);
+        let mut query = sqlx::query(q.sql);
+        for p in q.params {
+            query = match p {
+                CatalogParam::TableId => query.bind(self.table_id),
+                CatalogParam::Version => query.bind(version),
+            };
+        }
+        let row = query
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(sqlite_err)?
+            .ok_or(TxnLogError::MissingMetadata)?;
 
         let schema_json: String = row.try_get("schema_json").map_err(sqlite_err)?;
         let partition_columns: Option<String> =
@@ -144,21 +145,19 @@ impl SqliteTxnLogReader {
     }
 
     async fn fetch_protocol(&self, version: Version) -> Result<Protocol, TxnLogError> {
-        let row = sqlx::query(
-            r#"
-            SELECT min_reader_version, min_writer_version
-            FROM dl_protocol_updates
-            WHERE table_id = ? AND version <= ?
-            ORDER BY version DESC
-            LIMIT 1
-            "#,
-        )
-        .bind(self.table_id)
-        .bind(version)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(sqlite_err)?
-        .ok_or(TxnLogError::MissingProtocol)?;
+        let q = latest_protocol_query(Dialect::Sqlite);
+        let mut query = sqlx::query(q.sql);
+        for p in q.params {
+            query = match p {
+                CatalogParam::TableId => query.bind(self.table_id),
+                CatalogParam::Version => query.bind(version),
+            };
+        }
+        let row = query
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(sqlite_err)?
+            .ok_or(TxnLogError::MissingProtocol)?;
 
         let min_reader_version: i64 = row.try_get("min_reader_version").map_err(sqlite_err)?;
         let min_writer_version: i64 = row.try_get("min_writer_version").map_err(sqlite_err)?;
@@ -170,48 +169,18 @@ impl SqliteTxnLogReader {
     }
 
     async fn fetch_active_files(&self, version: Version) -> Result<Vec<ActiveFile>, TxnLogError> {
-        let rows = sqlx::query(
-            r#"
-            WITH actions AS (
-                SELECT path,
-                       version,
-                       1 AS is_add,
-                       size_bytes,
-                       partition_values,
-                       modification_time
-                FROM dl_add_files
-                WHERE table_id = ? AND version <= ?
-                UNION ALL
-                SELECT path,
-                       version,
-                       0 AS is_add,
-                       NULL AS size_bytes,
-                       NULL AS partition_values,
-                       NULL AS modification_time
-                FROM dl_remove_files
-                WHERE table_id = ? AND version <= ?
-            ), ranked AS (
-                SELECT path,
-                       size_bytes,
-                       partition_values,
-                       modification_time,
-                       is_add,
-                       ROW_NUMBER() OVER (PARTITION BY path ORDER BY version DESC) AS rn
-                FROM actions
-            )
-            SELECT path, size_bytes, partition_values, modification_time
-            FROM ranked
-            WHERE rn = 1 AND is_add = 1
-            ORDER BY path
-            "#,
-        )
-        .bind(self.table_id)
-        .bind(version)
-        .bind(self.table_id)
-        .bind(version)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(sqlite_err)?;
+        let q = active_files_query(Dialect::Sqlite);
+        let mut query = sqlx::query(q.sql);
+        for p in q.params {
+            query = match p {
+                CatalogParam::TableId => query.bind(self.table_id),
+                CatalogParam::Version => query.bind(version),
+            };
+        }
+        let rows = query
+            .fetch_all(&self.pool)
+            .await
+            .map_err(sqlite_err)?;
 
         let mut files = Vec::new();
         for row in rows {

@@ -1,0 +1,17 @@
+[package]
+name = "deltalakedb-catalog"
+description = "The SQL shape of the catalog: query text, bind order, and schema DDL per engine dialect. Pure rendering — no sqlx, no duckdb."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+# Intentionally zero-dep. This crate owns *text and shape*, never execution.
+# sqlx and duckdb stay out so every consumer (mirror, cli, test trees) links
+# the catalog without compiling bundled DuckDB.
+
+[dev-dependencies]
+insta = "1"

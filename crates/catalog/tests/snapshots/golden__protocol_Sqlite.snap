@@ -1,0 +1,11 @@
+---
+source: crates/catalog/tests/golden.rs
+expression: "format!(\"-- params: [{}]\\n{}\", params_string(q.params), q.sql)"
+---
+-- params: [TableId, Version]
+
+            SELECT min_reader_version, min_writer_version
+            FROM dl_protocol_updates
+            WHERE table_id = ? AND version <= ?
+            ORDER BY version DESC
+            LIMIT 1

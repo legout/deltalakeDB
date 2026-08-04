@@ -9,6 +9,7 @@ publish = false
 
 [dependencies]
 deltalakedb-core = { path = "../core" }
+deltalakedb-catalog = { path = "../catalog" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

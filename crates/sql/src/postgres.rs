@@ -1,6 +1,10 @@
 //! Postgres-backed implementations of the transaction log reader/writer traits.
 
 use chrono::{DateTime, Utc};
+use deltalakedb_catalog::{
+    active_files_query, latest_metadata_query, latest_protocol_query, CatalogParam, Dialect,
+};
+use deltalakedb_core::delta::json_value_to_string;
 use deltalakedb_core::txn_log::{
     ActiveFile, AppTransaction, CommitRequest, CommitResult, Protocol, RemovedFile, TableMetadata,
     TableSnapshot, TxnLogError, TxnLogReader, TxnLogWriter, Version, INITIAL_VERSION,
@@ -166,20 +170,18 @@ impl PostgresTxnLogReader {
     }
 
     async fn fetch_metadata(&self, version: Version) -> Result<TableMetadata, TxnLogError> {
-        let row = sqlx::query(
-            r#"
-            SELECT schema_json, partition_columns, table_properties
-            FROM dl_metadata_updates
-            WHERE table_id = $1 AND version <= $2
-            ORDER BY version DESC
-            LIMIT 1
-            "#,
-        )
-        .bind(self.table_id)
-        .bind(version)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(map_db_error)?;
+        let q = latest_metadata_query(Dialect::Postgres);
+        let mut query = sqlx::query(q.sql);
+        for p in q.params {
+            query = match p {
+                CatalogParam::TableId => query.bind(self.table_id),
+                CatalogParam::Version => query.bind(version),
+            };
+        }
+        let row = query
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(map_db_error)?;
 
         let row = row.ok_or(TxnLogError::MissingMetadata)?;
         let schema_json: Value = row.try_get("schema_json").map_err(map_db_error)?;
@@ -197,20 +199,18 @@ impl PostgresTxnLogReader {
     }
 
     async fn fetch_protocol(&self, version: Version) -> Result<Protocol, TxnLogError> {
-        let row = sqlx::query(
-            r#"
-            SELECT min_reader_version, min_writer_version
-            FROM dl_protocol_updates
-            WHERE table_id = $1 AND version <= $2
-            ORDER BY version DESC
-            LIMIT 1
-            "#,
-        )
-        .bind(self.table_id)
-        .bind(version)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(map_db_error)?;
+        let q = latest_protocol_query(Dialect::Postgres);
+        let mut query = sqlx::query(q.sql);
+        for p in q.params {
+            query = match p {
+                CatalogParam::TableId => query.bind(self.table_id),
+                CatalogParam::Version => query.bind(version),
+            };
+        }
+        let row = query
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(map_db_error)?;
 
         let row = row.ok_or(TxnLogError::MissingProtocol)?;
         let min_reader: i32 = row.try_get("min_reader_version").map_err(map_db_error)?;
@@ -223,46 +223,18 @@ impl PostgresTxnLogReader {
     }
 
     async fn fetch_active_files(&self, version: Version) -> Result<Vec<ActiveFile>, TxnLogError> {
-        let rows = sqlx::query(
-            r#"
-            WITH actions AS (
-                SELECT path,
-                       version,
-                       TRUE AS is_add,
-                       size_bytes,
-                       partition_values,
-                       modification_time
-                FROM dl_add_files
-                WHERE table_id = $1 AND version <= $2
-                UNION ALL
-                SELECT path,
-                       version,
-                       FALSE AS is_add,
-                       NULL::BIGINT AS size_bytes,
-                       NULL::JSONB AS partition_values,
-                       NULL::BIGINT AS modification_time
-                FROM dl_remove_files
-                WHERE table_id = $1 AND version <= $2
-            ), ranked AS (
-                SELECT path,
-                       size_bytes,
-                       partition_values,
-                       modification_time,
-                       is_add,
-                       ROW_NUMBER() OVER (PARTITION BY path ORDER BY version DESC) AS rn
-                FROM actions
-            )
-            SELECT path, size_bytes, partition_values, modification_time
-            FROM ranked
-            WHERE rn = 1 AND is_add = TRUE
-            ORDER BY path
-            "#,
-        )
-        .bind(self.table_id)
-        .bind(version)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(map_db_error)?;
+        let q = active_files_query(Dialect::Postgres);
+        let mut query = sqlx::query(q.sql);
+        for p in q.params {
+            query = match p {
+                CatalogParam::TableId => query.bind(self.table_id),
+                CatalogParam::Version => query.bind(version),
+            };
+        }
+        let rows = query
+            .fetch_all(&self.pool)
+            .await
+            .map_err(map_db_error)?;
 
         rows.into_iter()
             .map(|row| ActiveFileRow::try_from(row)?.into_active_file())
@@ -1156,16 +1128,6 @@ fn compute_action_count(
         count += 1;
     }
     count
-}
-
-fn json_value_to_string(value: Value) -> String {
-    match value {
-        Value::String(s) => s,
-        Value::Number(n) => n.to_string(),
-        Value::Bool(b) => b.to_string(),
-        Value::Null => String::new(),
-        other => other.to_string(),
-    }
 }
 
 #[derive(Debug)]

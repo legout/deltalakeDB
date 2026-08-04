@@ -1,6 +1,9 @@
 //! DuckDB-backed implementation of `TxnLogReader`.
 
 use chrono::{DateTime, Utc};
+use deltalakedb_catalog::{
+    active_files_query, latest_metadata_query, latest_protocol_query, CatalogParam, Dialect,
+};
 use deltalakedb_core::txn_log::{
     ActiveFile, Protocol, TableMetadata, TableSnapshot, TxnLogError, TxnLogReader, Version,
     INITIAL_VERSION,
@@ -102,29 +105,11 @@ impl DuckdbTxnLogReader {
     }
 
     fn fetch_metadata(&self, version: Version) -> Result<TableMetadata, TxnLogError> {
-        let mut stmt = self
-            .conn
-            .prepare(
-                r#"
-                SELECT
-                    CAST(schema_json AS VARCHAR) AS schema_json,
-                    CASE
-                        WHEN partition_columns IS NULL THEN NULL
-                        ELSE to_json(partition_columns)
-                    END AS partition_columns_json,
-                    CASE
-                        WHEN table_properties IS NULL THEN NULL
-                        ELSE CAST(table_properties AS VARCHAR)
-                    END AS table_properties
-                FROM dl_metadata_updates
-                WHERE table_id = ? AND version <= ?
-                ORDER BY version DESC
-                LIMIT 1
-                "#,
-            )
-            .map_err(duckdb_err)?;
+        let q = latest_metadata_query(Dialect::DuckDb);
+        let mut stmt = self.conn.prepare(q.sql).map_err(duckdb_err)?;
+        let binds = catalog_binds(q.params, &self.table_id.to_string(), version);
         let mut rows = stmt
-            .query(params![self.table_id.to_string(), version])
+            .query(duckdb::params_from_iter(binds))
             .map_err(duckdb_err)?;
         let row = rows
             .next()
@@ -151,20 +136,11 @@ impl DuckdbTxnLogReader {
     }
 
     fn fetch_protocol(&self, version: Version) -> Result<Protocol, TxnLogError> {
-        let mut stmt = self
-            .conn
-            .prepare(
-                r#"
-                SELECT min_reader_version, min_writer_version
-                FROM dl_protocol_updates
-                WHERE table_id = ? AND version <= ?
-                ORDER BY version DESC
-                LIMIT 1
-                "#,
-            )
-            .map_err(duckdb_err)?;
+        let q = latest_protocol_query(Dialect::DuckDb);
+        let mut stmt = self.conn.prepare(q.sql).map_err(duckdb_err)?;
+        let binds = catalog_binds(q.params, &self.table_id.to_string(), version);
         let mut rows = stmt
-            .query(params![self.table_id.to_string(), version])
+            .query(duckdb::params_from_iter(binds))
             .map_err(duckdb_err)?;
         let row = rows
             .next()
@@ -180,54 +156,11 @@ impl DuckdbTxnLogReader {
     }
 
     fn fetch_active_files(&self, version: Version) -> Result<Vec<ActiveFile>, TxnLogError> {
-        let mut stmt = self
-            .conn
-            .prepare(
-                r#"
-                WITH actions AS (
-                SELECT path,
-                       version,
-                       TRUE AS is_add,
-                       size_bytes,
-                       CAST(partition_values AS VARCHAR) AS partition_values,
-                       modification_time
-                FROM dl_add_files
-                WHERE table_id = ? AND version <= ?
-                UNION ALL
-                SELECT path,
-                       version,
-                       FALSE AS is_add,
-                       NULL AS size_bytes,
-                       NULL AS partition_values,
-                       NULL AS modification_time
-                    FROM dl_remove_files
-                    WHERE table_id = ? AND version <= ?
-                ), ranked AS (
-                    SELECT path,
-                           size_bytes,
-                           partition_values,
-                           modification_time,
-                           is_add,
-                           ROW_NUMBER() OVER (PARTITION BY path ORDER BY version DESC) AS rn
-                    FROM actions
-                )
-                SELECT path,
-                       size_bytes,
-                       partition_values,
-                       modification_time
-                FROM ranked
-                WHERE rn = 1 AND is_add
-                ORDER BY path
-                "#,
-            )
-            .map_err(duckdb_err)?;
+        let q = active_files_query(Dialect::DuckDb);
+        let mut stmt = self.conn.prepare(q.sql).map_err(duckdb_err)?;
+        let binds = catalog_binds(q.params, &self.table_id.to_string(), version);
         let mut rows = stmt
-            .query(params![
-                self.table_id.to_string(),
-                version,
-                self.table_id.to_string(),
-                version
-            ])
+            .query(duckdb::params_from_iter(binds))
             .map_err(duckdb_err)?;
 
         let mut files = Vec::new();
@@ -301,4 +234,21 @@ impl TxnLogReader for DuckdbTxnLogReader {
 
 fn duckdb_err(err: duckdb::Error) -> TxnLogError {
     TxnLogError::Invalid(format!("duckdb query failed: {err}"))
+}
+
+/// Materialises catalog-query parameters as DuckDB values, in the bind order
+/// the catalog declares. The DuckDB driver is not sqlx, so it cannot reuse the
+/// sqlx adapters' bind loop — but it honours the same `CatalogParam` order.
+fn catalog_binds(
+    params: &'static [CatalogParam],
+    table_id: &str,
+    version: Version,
+) -> Vec<duckdb::types::Value> {
+    params
+        .iter()
+        .map(|p| match p {
+            CatalogParam::TableId => duckdb::types::Value::Text(table_id.to_string()),
+            CatalogParam::Version => duckdb::types::Value::BigInt(version),
+        })
+        .collect()
 }

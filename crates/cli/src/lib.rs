@@ -6,6 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{anyhow, bail, Context, Result};
 use arrow_array::{Array, Int32Array, Int64Array, ListArray, StringArray, StructArray};
 use chrono::{DateTime, TimeZone, Utc};
+use deltalakedb_catalog as catalog;
 use deltalakedb_core::delta::{json_value_to_string, DeltaAction};
 use deltalakedb_core::txn_log::{ActiveFile, Protocol, RemovedFile, TableMetadata, Version};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
@@ -212,18 +213,10 @@ async fn import_into_postgres(
 }
 
 async fn clear_postgres_tables(pool: &PgPool, table_id: Uuid) -> Result<()> {
-    let tables = [
-        "dl_add_files",
-        "dl_remove_files",
-        "dl_metadata_updates",
-        "dl_protocol_updates",
-        "dl_txn_actions",
-        "dl_mirror_status",
-        "dl_table_versions",
-        "dl_table_heads",
-    ];
-
-    for table in tables {
+    for table in catalog::table_names() {
+        if *table == "dl_tables" {
+            continue;
+        }
         let query = format!("DELETE FROM {table} WHERE table_id = $1");
         sqlx::query(&query)
             .bind(table_id)
@@ -443,17 +436,10 @@ async fn import_into_sqlite(
 }
 
 async fn clear_sqlite_tables(pool: &SqlitePool, table_id: Uuid) -> Result<()> {
-    let tables = [
-        "dl_add_files",
-        "dl_remove_files",
-        "dl_metadata_updates",
-        "dl_protocol_updates",
-        "dl_txn_actions",
-        "dl_mirror_status",
-        "dl_table_versions",
-        "dl_table_heads",
-    ];
-    for table in tables {
+    for table in catalog::table_names() {
+        if *table == "dl_tables" {
+            continue;
+        }
         let query = format!("DELETE FROM {table} WHERE table_id = ?");
         sqlx::query(&query)
             .bind(table_id)
